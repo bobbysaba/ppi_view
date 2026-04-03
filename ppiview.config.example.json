@@ -1,0 +1,5 @@
+{
+  "data_dir": "/path/to/daily/lidar/cdf/files",
+  "sfc_dir":  "/path/to/daily/surface/obs/txt/files",
+  "http_port": 8050
+}
