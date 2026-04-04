@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NSSL Lidar VAD Viewer</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ── Catppuccin Mocha palette ──────────────────────────────────────────── */
+    :root {
+      --bg:      #1e1e2e;
+      --surface: #181825;
+      --border:  #313244;
+      --muted:   #45475a;
+      --text:    #cdd6f4;
+      --subtext: #a6adc8;
+      --blue:    #89b4fa;
+      --green:   #a6e3a1;
+      --red:     #f38ba8;
+      --orange:  #fab387;
+      --purple:  #cba6f7;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-monospace, 'Cascadia Code', monospace;
+      font-size: 13px;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Header ────────────────────────────────────────────────────────────── */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 7px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+      gap: 8px;
+    }
+
+    h1 {
+      font-size: 0.82rem;
+      color: #cfe2ff;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    #status-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.72rem;
+      color: var(--subtext);
+      flex-wrap: wrap;
+    }
+
+    #conn-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      flex-shrink: 0;
+    }
+    #conn-dot.off { background: var(--red); }
+
+    #date-input {
+      background: var(--muted);
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 3px 6px;
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 0.72rem;
+      color-scheme: dark;
+    }
+
+    .tog-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.72rem;
+      padding: 2px 0;
+      cursor: pointer;
+      color: var(--subtext);
+      user-select: none;
+    }
+    .tog-row:hover { color: var(--text); }
+    .tog-row input[type="checkbox"] { accent-color: var(--blue); cursor: pointer; }
+
+    /* ── Main two-column area ──────────────────────────────────────────────── */
+    #main {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      gap: 9px;
+      padding: 9px;
+      overflow: hidden;
+    }
+
+    /* ── Cards ─────────────────────────────────────────────────────────────── */
+    .vad-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-height: 0;
+    }
+
+    .panel-hdr {
+      padding: 5px 8px 4px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      flex-shrink: 0;
+    }
+
+    .panel-title {
+      font-size: 0.68rem;
+      color: var(--subtext);
+      text-transform: uppercase;
+      letter-spacing: 0.10em;
+    }
+
+    .cb-canvas {
+      display: block;
+      width: 100%;
+      height: 12px;
+      border-radius: 2px;
+    }
+
+    .cb-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.58rem;
+      color: var(--subtext);
+    }
+
+    /* ── Hodograph (left) ──────────────────────────────────────────────────── */
+    #hodo-card {
+      flex: 1;
+    }
+
+    .canvas-wrap {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      background: var(--bg);
+    }
+
+    #hodo-canvas { display: block; }
+
+    /* ── Time-height column (right) ────────────────────────────────────────── */
+    #th-col {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+      min-height: 0;
+    }
+
+    #wspd-card, #wdir-card {
+      flex: 1;
+      min-height: 0;
+    }
+
+    .th-wrap {
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+      background: var(--bg);
+    }
+
+    .th-canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      cursor: crosshair;
+    }
+
+    /* ── Scrubber bar ──────────────────────────────────────────────────────── */
+    #scrubber-bar {
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      padding: 5px 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    #playback { display: flex; gap: 3px; flex-shrink: 0; }
+
+    .pb-btn {
+      background: var(--muted);
+      color: var(--text);
+      border: 1px solid var(--border);
+      width: 30px; height: 26px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      display: flex; align-items: center; justify-content: center;
+      transition: border-color 0.15s, color 0.15s;
+      user-select: none;
+    }
+    .pb-btn:hover:not(:disabled) { border-color: var(--subtext); }
+    .pb-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+    #scrubber-wrap {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      min-width: 0;
+    }
+
+    #scrubber {
+      width: 100%;
+      accent-color: var(--blue);
+      cursor: pointer;
+      height: 16px;
+    }
+
+    #scrub-label {
+      font-size: 0.62rem;
+      color: var(--subtext);
+      text-align: center;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>NSSL Lidar VAD Viewer</h1>
+  <div id="status-bar">
+    <span id="conn-dot"></span>
+    <span id="status-msg">No data</span>
+    <input type="date" id="date-input">
+    <label class="tog-row"><input type="checkbox" id="tog-r2" checked> r² filter</label>
+    <div id="r2-thresh-row" style="font-size:0.72rem; color:var(--subtext);">
+      Threshold&nbsp;
+      <input type="number" id="r2-thresh" value="0.30" step="0.01" min="0" max="1"
+             style="width:52px; background:var(--muted); color:var(--text); border:1px solid var(--border);
+                    border-radius:3px; padding:1px 4px; font-family:inherit; font-size:0.72rem;">
+    </div>
+  </div>
+</header>
+
+<div id="main">
+  <!-- Left: Hodograph -->
+  <div class="vad-card" id="hodo-card">
+    <div class="panel-hdr">
+      <div class="panel-title" id="hodo-title">Hodograph</div>
+      <canvas class="cb-canvas" id="hodo-cb"></canvas>
+      <div class="cb-labels">
+        <span>0 km</span>
+        <span id="hodo-cb-max">4 km AGL</span>
+      </div>
+    </div>
+    <div class="canvas-wrap" id="hodo-wrap">
+      <canvas id="hodo-canvas"></canvas>
+    </div>
+  </div>
+
+  <!-- Right: Time-height stacked -->
+  <div id="th-col">
+    <div class="vad-card" id="wspd-card">
+      <div class="panel-hdr">
+        <div class="panel-title">Wind Speed (m/s)</div>
+        <canvas class="cb-canvas" id="wspd-cb"></canvas>
+        <div class="cb-labels"><span>0</span><span>12.5</span><span>25</span></div>
+      </div>
+      <div class="th-wrap">
+        <canvas id="wspd-canvas" class="th-canvas"></canvas>
+      </div>
+    </div>
+    <div class="vad-card" id="wdir-card">
+      <div class="panel-hdr">
+        <div class="panel-title">Wind Direction (°)</div>
+        <canvas class="cb-canvas" id="wdir-cb"></canvas>
+        <div class="cb-labels"><span>0°</span><span>180°</span><span>360°</span></div>
+      </div>
+      <div class="th-wrap">
+        <canvas id="wdir-canvas" class="th-canvas"></canvas>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Scrubber -->
+<div id="scrubber-bar">
+  <div id="playback">
+    <button class="pb-btn" id="btn-prev" title="Previous step" disabled>⏪</button>
+    <button class="pb-btn" id="btn-next" title="Next step"     disabled>⏩</button>
+  </div>
+  <div id="scrubber-wrap">
+    <input type="range" id="scrubber" min="0" max="0" value="0" step="1" disabled>
+    <div id="scrub-label">-- UTC</div>
+  </div>
+</div>
+
+<script>
+'use strict';
+const TEST_VAD_DATE = {{ test_vad_date | tojson }};
+const PHASE_CM      = {{ phase_cm | tojson }};  // 36 × [R,G,B], one per 10° bin
+
+const MAX_HEIGHT_KM  = 4.0;
+const MAX_SPEED_RING = 25;   // m/s — outermost hodograph ring
+
+// ── Colormaps ─────────────────────────────────────────────────────────────────
+
+// Viridis-like sequential (purple → teal → yellow) for hodograph height
+const HEIGHT_CM = [
+  [ 68,   1,  84],  // 0.00
+  [ 59,  82, 139],  // 0.25
+  [ 33, 145, 140],  // 0.50
+  [ 94, 201,  98],  // 0.75
+  [253, 231,  37],  // 1.00
+];
+
+// Wind speed: near-white → blue → purple (0 – 25 m/s)
+const WSPD_CM = [
+  [240, 248, 255],  // 0 m/s
+  [100, 180, 255],  // ~6
+  [ 55, 120, 220],  // ~12
+  [ 80,  40, 200],  // ~19
+  [120,   0, 160],  // 25 m/s
+];
+
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+function sampleCM(stops, t) {
+  t = Math.max(0, Math.min(1, t));
+  const pos = t * (stops.length - 1);
+  const i   = Math.min(Math.floor(pos), stops.length - 2);
+  const f   = pos - i;
+  return [
+    Math.round(lerp(stops[i][0], stops[i+1][0], f)),
+    Math.round(lerp(stops[i][1], stops[i+1][1], f)),
+    Math.round(lerp(stops[i][2], stops[i+1][2], f)),
+  ];
+}
+
+function heightColor(t)  { return sampleCM(HEIGHT_CM, t); }
+function wspdColor(t)    { return sampleCM(WSPD_CM, t); }
+
+function wdirColor(deg) {
+  if (deg === null || deg === undefined || isNaN(deg)) return null;
+  const idx = Math.floor(((deg % 360) + 360) % 360 / 10) % 36;
+  return PHASE_CM[idx];
+}
+
+// ── Application state ─────────────────────────────────────────────────────────
+const D = { timestamps: [], height_km: [], wdir: [], wspd: [], r_sq: [] };
+const S = { timeIdx: 0, r2Filter: true, r2Thresh: 0.30, hClip: 0 };
+
+// Pre-rendered offscreen canvases for time-height images
+let wspdOff = null, wdirOff = null;
+
+// ── DOM refs ──────────────────────────────────────────────────────────────────
+const hodoCvs   = document.getElementById('hodo-canvas');
+const wspdCvs   = document.getElementById('wspd-canvas');
+const wdirCvs   = document.getElementById('wdir-canvas');
+const hodoCbCvs = document.getElementById('hodo-cb');
+const wspdCbCvs = document.getElementById('wspd-cb');
+const wdirCbCvs = document.getElementById('wdir-cb');
+const scrubber     = document.getElementById('scrubber');
+const scrubLbl     = document.getElementById('scrub-label');
+const dateInput    = document.getElementById('date-input');
+const togR2        = document.getElementById('tog-r2');
+const r2ThreshRow  = document.getElementById('r2-thresh-row');
+const r2ThreshInp  = document.getElementById('r2-thresh');
+const connDot      = document.getElementById('conn-dot');
+const statusMsg = document.getElementById('status-msg');
+const hodoTitle = document.getElementById('hodo-title');
+const hodoCbMax = document.getElementById('hodo-cb-max');
+const btnPrev   = document.getElementById('btn-prev');
+const btnNext   = document.getElementById('btn-next');
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+function fmtUTC(unix) {
+  const d  = new Date(unix * 1000);
+  const hh = d.getUTCHours().toString().padStart(2, '0');
+  const mm = d.getUTCMinutes().toString().padStart(2, '0');
+  return `${hh}:${mm} UTC`;
+}
+
+// Apply r² mask: set any gate to null where r_sq < thresh
+function applyR2Mask(field2d, r2, thresh) {
+  return field2d.map((row, t) =>
+    row.map((v, h) => {
+      if (v === null || v === undefined) return null;
+      const rq = r2[t]?.[h];
+      if (rq === null || rq === undefined || rq < thresh) return null;
+      return v;
+    })
+  );
+}
+
+// ── Colorbar ──────────────────────────────────────────────────────────────────
+function drawColorbar(canvas, cmFn) {
+  const W = Math.max(100, Math.round(canvas.getBoundingClientRect().width));
+  const H = 12;
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(W, H);
+  for (let x = 0; x < W; x++) {
+    const [r, g, b] = cmFn(x / (W - 1));
+    for (let y = 0; y < H; y++) {
+      const i = (y * W + x) * 4;
+      img.data[i] = r; img.data[i+1] = g; img.data[i+2] = b; img.data[i+3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+function redrawColorbars() {
+  drawColorbar(hodoCbCvs, t => heightColor(t));
+  drawColorbar(wspdCbCvs, t => wspdColor(t));
+  drawColorbar(wdirCbCvs, t => wdirColor(t * 360) || [30, 30, 46]);
+}
+
+// ── Time-height offscreen pre-render ──────────────────────────────────────────
+function buildTHOffscreen(masked2d, cmFn, vmin, vmax) {
+  const nT = masked2d.length;
+  const nH = S.hClip;
+  if (!nT || !nH) return null;
+
+  const tmp = document.createElement('canvas');
+  tmp.width = nT; tmp.height = nH;
+  const ctx = tmp.getContext('2d');
+  const img = ctx.createImageData(nT, nH);
+  const BG  = [30, 30, 46];  // --surface-ish
+
+  for (let t = 0; t < nT; t++) {
+    for (let h = 0; h < nH; h++) {
+      const v  = masked2d[t]?.[h];
+      const py = nH - 1 - h;       // flip: height 0 at bottom
+      const pi = (py * nT + t) * 4;
+      if (v === null || v === undefined) {
+        img.data[pi] = BG[0]; img.data[pi+1] = BG[1]; img.data[pi+2] = BG[2];
+      } else {
+        const norm = Math.max(0, Math.min(1, (v - vmin) / (vmax - vmin)));
+        const [r, g, b] = cmFn(norm);
+        img.data[pi] = r; img.data[pi+1] = g; img.data[pi+2] = b;
+      }
+      img.data[pi+3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return tmp;
+}
+
+function rebuildOffscreens() {
+  const mWspd = S.r2Filter ? applyR2Mask(D.wspd, D.r_sq, S.r2Thresh) : D.wspd;
+  const mWdir = S.r2Filter ? applyR2Mask(D.wdir, D.r_sq, S.r2Thresh) : D.wdir;
+  wspdOff = buildTHOffscreen(mWspd, t => wspdColor(t),  0, 25);
+  wdirOff = buildTHOffscreen(mWdir, t => wdirColor(t * 360) || [30,30,46], 0, 360);
+}
+
+// ── Time-height display render ────────────────────────────────────────────────
+const TH_M = { top: 5, right: 8, bottom: 28, left: 42 };
+
+function drawTH(canvas, offscreen) {
+  const dpr  = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const CW   = Math.round(rect.width * dpr);
+  const CH   = Math.round(rect.height * dpr);
+  if (canvas.width !== CW || canvas.height !== CH) { canvas.width = CW; canvas.height = CH; }
+
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const W = rect.width, H = rect.height;
+
+  ctx.fillStyle = '#1e1e2e';
+  ctx.fillRect(0, 0, W, H);
+
+  const pX = TH_M.left,   pY = TH_M.top;
+  const pW = W - TH_M.left - TH_M.right;
+  const pH = H - TH_M.top  - TH_M.bottom;
+  if (pW <= 0 || pH <= 0) return;
+
+  // Scaled data image (nearest-neighbor)
+  if (offscreen) {
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(offscreen, pX, pY, pW, pH);
+  }
+
+  // Vertical cursor line
+  const nT = D.timestamps.length;
+  if (nT > 0) {
+    const cx = pX + (S.timeIdx + 0.5) / nT * pW;
+    ctx.strokeStyle = 'rgba(205, 214, 244, 0.85)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(cx, pY);
+    ctx.lineTo(cx, pY + pH);
+    ctx.stroke();
+  }
+
+  ctx.font = '10px ui-monospace, monospace';
+
+  // Y-axis: height labels (km)
+  const nH   = S.hClip;
+  const maxH = D.height_km[nH - 1] ?? MAX_HEIGHT_KM;
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  for (let km = 0; km <= Math.ceil(maxH); km++) {
+    if (km > maxH) break;
+    const frac = km / maxH;
+    const py   = pY + pH - frac * pH;
+    ctx.fillStyle = '#a6adc8';
+    ctx.fillText(`${km}`, pX - 4, py);
+    ctx.strokeStyle = '#45475a';
+    ctx.lineWidth = 0.5;
+    ctx.beginPath(); ctx.moveTo(pX - 3, py); ctx.lineTo(pX, py); ctx.stroke();
+  }
+
+  // X-axis: time labels (HH:MM UTC)
+  if (nT > 0) {
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    const nTicks = Math.min(6, nT);
+    for (let i = 0; i <= nTicks; i++) {
+      const ti = Math.min(nT - 1, Math.round(i * (nT - 1) / nTicks));
+      const px = pX + (ti + 0.5) / nT * pW;
+      ctx.fillStyle = '#a6adc8';
+      ctx.fillText(fmtUTC(D.timestamps[ti]), px, pY + pH + 3);
+    }
+  }
+
+  // Plot border
+  ctx.strokeStyle = '#313244';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(pX, pY, pW, pH);
+}
+
+// ── Hodograph render ──────────────────────────────────────────────────────────
+function drawHodograph() {
+  const wrap = document.getElementById('hodo-wrap');
+  const dpr  = window.devicePixelRatio || 1;
+  const rect = wrap.getBoundingClientRect();
+  const side = Math.min(rect.width, rect.height);
+  const CW   = Math.round(side * dpr);
+  if (hodoCvs.width !== CW || hodoCvs.height !== CW) {
+    hodoCvs.width = CW; hodoCvs.height = CW;
+  }
+  hodoCvs.style.width  = `${side}px`;
+  hodoCvs.style.height = `${side}px`;
+
+  const ctx = hodoCvs.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const W = side, H = side;
+
+  ctx.fillStyle = '#1e1e2e';
+  ctx.fillRect(0, 0, W, H);
+
+  const margin = 38;
+  const cx = W / 2, cy = H / 2;
+  const radius = (side / 2) - margin;
+  const scale  = radius / MAX_SPEED_RING;
+
+  // Speed rings
+  for (const spd of [5, 10, 15, 20, 25]) {
+    const r = spd * scale;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+    ctx.strokeStyle = spd === 25 ? '#45475a' : '#313244';
+    ctx.lineWidth = spd === 25 ? 1.2 : 0.7;
+    ctx.stroke();
+    ctx.fillStyle = '#45475a';
+    ctx.font = '9px ui-monospace, monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(`${spd}`, cx + r + 2, cy - 1);
+  }
+
+  // Cardinal axes (dashed)
+  ctx.strokeStyle = '#45475a';
+  ctx.lineWidth = 0.7;
+  ctx.setLineDash([3, 4]);
+  ctx.beginPath(); ctx.moveTo(cx, cy - radius - 6); ctx.lineTo(cx, cy + radius + 6); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx - radius - 6, cy); ctx.lineTo(cx + radius + 6, cy); ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.fillStyle = '#a6adc8';
+  ctx.font = '10px ui-monospace, monospace';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; ctx.fillText('N', cx, cy - radius - 8);
+  ctx.textBaseline = 'top';                               ctx.fillText('S', cx, cy + radius + 8);
+  ctx.textAlign = 'right';  ctx.textBaseline = 'middle';  ctx.fillText('W', cx - radius - 8, cy);
+  ctx.textAlign = 'left';                                  ctx.fillText('E', cx + radius + 8, cy);
+
+  if (!D.timestamps.length) return;
+
+  const wspd = D.wspd[S.timeIdx];
+  const wdir = D.wdir[S.timeIdx];
+  const r_sq = D.r_sq[S.timeIdx];
+  if (!wspd || !wdir) return;
+
+  const nH   = S.hClip;
+  const maxH = D.height_km[nH - 1] ?? MAX_HEIGHT_KM;
+
+  // Collect valid (U, V, heightFraction) points
+  const pts = [];
+  for (let h = 0; h < nH; h++) {
+    const sp = wspd[h], wd = wdir[h], rq = r_sq?.[h];
+    if (sp === null || wd === null || sp === undefined || wd === undefined) continue;
+    if (S.r2Filter && rq !== null && rq !== undefined && rq < S.r2Thresh) continue;
+    const rad = wd * Math.PI / 180;
+    pts.push({
+      px: cx + sp * Math.sin(rad) * scale,
+      py: cy - sp * Math.cos(rad) * scale,
+      t:  D.height_km[h] / maxH,
+    });
+  }
+
+  if (!pts.length) return;
+
+  // Line segments colored by mid-segment height
+  for (let i = 1; i < pts.length; i++) {
+    const [r, g, b] = heightColor((pts[i-1].t + pts[i].t) / 2);
+    ctx.strokeStyle = `rgb(${r},${g},${b})`;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(pts[i-1].px, pts[i-1].py);
+    ctx.lineTo(pts[i].px,   pts[i].py);
+    ctx.stroke();
+  }
+
+  // Dots
+  for (const p of pts) {
+    const [r, g, b] = heightColor(p.t);
+    ctx.fillStyle = `rgb(${r},${g},${b})`;
+    ctx.beginPath();
+    ctx.arc(p.px, p.py, 2.5, 0, 2 * Math.PI);
+    ctx.fill();
+  }
+
+  // Update title with current timestamp
+  if (D.timestamps[S.timeIdx] !== undefined) {
+    hodoTitle.textContent = `Hodograph – ${fmtUTC(D.timestamps[S.timeIdx])}`;
+  }
+}
+
+// ── Render all ────────────────────────────────────────────────────────────────
+function renderAll() {
+  drawHodograph();
+  drawTH(wspdCvs, wspdOff);
+  drawTH(wdirCvs, wdirOff);
+  updateScrubLabel();
+}
+
+function updateScrubLabel() {
+  const nT = D.timestamps.length;
+  if (nT > 0 && D.timestamps[S.timeIdx] !== undefined) {
+    scrubLbl.textContent = `${S.timeIdx + 1} / ${nT}  ·  ${fmtUTC(D.timestamps[S.timeIdx])}`;
+  } else {
+    scrubLbl.textContent = '-- UTC';
+  }
+}
+
+// ── Data loading ──────────────────────────────────────────────────────────────
+function loadData(date) {
+  statusMsg.textContent = 'Loading…';
+  connDot.className = '';
+  fetch(`/vad/data?date=${date}`)
+    .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+    .then(data => {
+      D.timestamps = data.timestamps || [];
+      D.height_km  = data.height_km  || [];
+      D.wdir       = data.wdir       || [];
+      D.wspd       = data.wspd       || [];
+      D.r_sq       = data.r_sq       || [];
+
+      // Clip height axis to MAX_HEIGHT_KM
+      let hc = D.height_km.findIndex(h => h > MAX_HEIGHT_KM);
+      S.hClip = hc < 0 ? D.height_km.length : hc;
+
+      const maxHLabel = D.height_km[S.hClip - 1]?.toFixed(1) ?? MAX_HEIGHT_KM.toFixed(1);
+      hodoCbMax.textContent = `${maxHLabel} km AGL`;
+
+      const nT = D.timestamps.length;
+      scrubber.max     = Math.max(0, nT - 1);
+      scrubber.value   = 0;
+      scrubber.disabled = nT === 0;
+      btnPrev.disabled  = nT === 0;
+      btnNext.disabled  = nT === 0;
+      S.timeIdx = 0;
+
+      statusMsg.textContent = `${nT} time steps · ${S.hClip} height levels`;
+
+      rebuildOffscreens();
+      renderAll();
+    })
+    .catch(err => {
+      statusMsg.textContent = `Error: ${err.message}`;
+      connDot.className = 'off';
+    });
+}
+
+// ── Event handlers ────────────────────────────────────────────────────────────
+scrubber.addEventListener('input', () => {
+  S.timeIdx = +scrubber.value;
+  renderAll();
+});
+
+btnPrev.addEventListener('click', () => {
+  if (S.timeIdx > 0) { S.timeIdx--; scrubber.value = S.timeIdx; renderAll(); }
+});
+
+btnNext.addEventListener('click', () => {
+  if (S.timeIdx < D.timestamps.length - 1) { S.timeIdx++; scrubber.value = S.timeIdx; renderAll(); }
+});
+
+dateInput.addEventListener('change', () => {
+  const d = dateInput.value.replace(/-/g, '');
+  if (d.length === 8) loadData(d);
+});
+
+togR2.addEventListener('change', e => {
+  S.r2Filter = e.target.checked;
+  r2ThreshRow.style.display = e.target.checked ? 'block' : 'none';
+  rebuildOffscreens();
+  renderAll();
+});
+
+r2ThreshInp.addEventListener('change', e => {
+  S.r2Thresh = parseFloat(e.target.value) ?? 0.30;
+  if (S.r2Filter) { rebuildOffscreens(); renderAll(); }
+});
+
+// Click / scrub on time-height canvases → update time index
+function thClick(canvas, e) {
+  const nT = D.timestamps.length;
+  if (!nT) return;
+  const rect = canvas.getBoundingClientRect();
+  const pW   = rect.width - TH_M.left - TH_M.right;
+  const x    = e.clientX - rect.left - TH_M.left;
+  S.timeIdx  = Math.max(0, Math.min(nT - 1, Math.floor(x / pW * nT)));
+  scrubber.value = S.timeIdx;
+  renderAll();
+}
+
+wspdCvs.addEventListener('click',     e => thClick(wspdCvs, e));
+wdirCvs.addEventListener('click',     e => thClick(wdirCvs, e));
+wspdCvs.addEventListener('mousemove', e => { if (e.buttons) thClick(wspdCvs, e); });
+wdirCvs.addEventListener('mousemove', e => { if (e.buttons) thClick(wdirCvs, e); });
+
+// ── ResizeObserver ────────────────────────────────────────────────────────────
+const ro = new ResizeObserver(() => {
+  redrawColorbars();
+  if (D.timestamps.length) renderAll();
+});
+ro.observe(document.getElementById('hodo-card'));
+ro.observe(document.getElementById('wspd-card'));
+ro.observe(document.getElementById('wdir-card'));
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+(function init() {
+  // Colorbars need layout to be done first
+  requestAnimationFrame(redrawColorbars);
+
+  // Determine initial date
+  let initDate;
+  if (TEST_VAD_DATE) {
+    initDate = TEST_VAD_DATE;
+    const y = initDate.slice(0, 4), mo = initDate.slice(4, 6), dd = initDate.slice(6, 8);
+    dateInput.value = `${y}-${mo}-${dd}`;
+  } else {
+    const today = new Date();
+    initDate = today.toISOString().slice(0, 10).replace(/-/g, '');
+    dateInput.value = today.toISOString().slice(0, 10);
+  }
+
+  loadData(initDate);
+})();
+</script>
+</body>
+</html>

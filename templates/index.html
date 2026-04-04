@@ -308,6 +308,7 @@
     <span id="last-update">--:--:-- UTC</span>
     <button id="live-btn" class="btn">Live</button>
     <input type="date" id="date-input" disabled>
+    <span id="precompute-msg" style="display:none; font-size:0.72rem; color:var(--orange);">⏳ Computing circulation…</span>
   </div>
 </header>
 
@@ -333,6 +334,7 @@
       <div class="tabs" data-side="left">
         <button class="tab active" data-field="velocity">Velocity</button>
         <button class="tab"        data-field="vorticity">Vorticity</button>
+        <button class="tab"        data-field="circulation">Circulation</button>
         <button class="tab"        data-field="backscatter">Backscatter</button>
       </div>
       <canvas class="cb-canvas" id="left-cb"></canvas>
@@ -351,6 +353,7 @@
       <div class="tabs" data-side="right">
         <button class="tab"        data-field="velocity">Velocity</button>
         <button class="tab active" data-field="vorticity">Vorticity</button>
+        <button class="tab"        data-field="circulation">Circulation</button>
         <button class="tab"        data-field="backscatter">Backscatter</button>
       </div>
       <canvas class="cb-canvas" id="right-cb"></canvas>
@@ -427,6 +430,15 @@ const CM = {
     [255,  40,   0],   // +0.025
     [192,   0,   0],   // +0.05  dark red
   ],
+  circulation: [
+    [  0,   0, 200],
+    [ 64, 128, 255],
+    [180, 215, 255],
+    [245, 245, 245],
+    [255, 180, 150],
+    [255,  40,   0],
+    [192,   0,   0],
+  ],
   // Backscatter: sequential plasma-like
   backscatter: [
     [ 13,   8, 135],
@@ -444,6 +456,7 @@ const CM = {
 const FIELD_CFG = {
   velocity:    { min: -20,   max:  20,   log: false, unit: 'm/s',        minLbl: '-20',  maxLbl: '+20'  },
   vorticity:   { min: -0.05, max:  0.05, log: false, unit: 's⁻¹',       minLbl: '-0.05',maxLbl: '+0.05'},
+  circulation: { min: -500,  max:  500,  log: false, unit: 'm²/s',      minLbl: '-500', maxLbl: '+500' },
   backscatter: { min:   -7,  max:  -3,   log: true,  unit: 'km⁻¹sr⁻¹',  minLbl: '1e-7', maxLbl: '1e-3' },
 };
 
@@ -790,6 +803,7 @@ function formatVal(field, v) {
   if (v === null || v === undefined) return '--';
   if (field === 'velocity')    return `${v.toFixed(2)} m/s`;
   if (field === 'vorticity')   return `${v.toFixed(4)} s⁻¹`;
+  if (field === 'circulation') return `${v.toFixed(2)} m²/s`;
   if (field === 'backscatter') return v.toExponential(2) + ' km⁻¹sr⁻¹';
   return String(v);
 }
@@ -835,6 +849,35 @@ function handleCursorMove(e) {
   document.getElementById('cur-az').textContent       = `${azGeo.toFixed(1)}°`;
   document.getElementById('cur-left-val').textContent  = formatVal(S.leftField,  data[S.leftField][rayJ][gateI]);
   document.getElementById('cur-right-val').textContent = formatVal(S.rightField, data[S.rightField][rayJ][gateI]);
+}
+
+// ── Precompute polling ────────────────────────────────────────────────────────
+let _precomputePollTimer = null;
+
+function _setPrecomputeMsg(visible) {
+  document.getElementById('precompute-msg').style.display = visible ? '' : 'none';
+}
+
+async function _startPrecompute(dateStr, onDone) {
+  await fetch('/precompute', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ date: dateStr }),
+  });
+  _setPrecomputeMsg(true);
+  clearInterval(_precomputePollTimer);
+  _precomputePollTimer = setInterval(async () => {
+    try {
+      const r    = await fetch('/precompute_status');
+      const body = await r.json();
+      if (!body.computing) {
+        clearInterval(_precomputePollTimer);
+        _precomputePollTimer = null;
+        _setPrecomputeMsg(false);
+        if (onDone) onDone();
+      }
+    } catch (_) {}
+  }, 1000);
 }
 
 // ── Data loading ──────────────────────────────────────────────────────────────
@@ -1060,16 +1103,19 @@ async function toggleLive(wantLive) {
 async function handleDateChange() {
   const val = document.getElementById('date-input').value;  // 'YYYY-MM-DD'
   if (!val) return;
-  S.viewDate = val.replace(/-/g, '');  // 'YYYYMMDD'
-  S.cache    = {};
+  const dateStr = val.replace(/-/g, '');  // 'YYYYMMDD'
   pause();
-  try {
-    await fetchScans();
-    enableControls(S.scans.length > 0);
-    S.idx = S.scans.length > 0 ? 0 : -1;
-    updateScrubber();
-    if (S.idx >= 0) renderCurrent();
-  } catch(e) { console.error(e); }
+  await _startPrecompute(dateStr, async () => {
+    S.viewDate = dateStr;
+    S.cache    = {};
+    try {
+      await fetchScans();
+      enableControls(S.scans.length > 0);
+      S.idx = S.scans.length > 0 ? 0 : -1;
+      updateScrubber();
+      if (S.idx >= 0) renderCurrent();
+    } catch(e) { console.error(e); }
+  });
 }
 
 // ── Field tab switching ───────────────────────────────────────────────────────

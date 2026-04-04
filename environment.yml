@@ -1,0 +1,11 @@
+name: ppi_view
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python>=3.9
+  - netcdf4
+  - flask
+  - scipy
+  - tqdm
+  - cmocean
