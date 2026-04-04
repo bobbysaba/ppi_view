@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-"""
-ppiview — real-time PPI viewer for CLAMPS Doppler lidar data.
-
-Usage:  python ppi_view.py [--data-dir /path/to/data] [--sfc-dir /path/to/sfc]
-Access: http://<host-ip>:8050
-"""
-
 from flask import Flask, Response, jsonify, render_template, request
 from pathlib import Path
 from datetime import datetime, timezone
@@ -17,18 +10,18 @@ import cmocean
 from scipy.spatial import cKDTree
 from tqdm import tqdm
 
-# ── Args / Config ─────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser()
-parser.add_argument('--data-dir', type=str, default=None)
-parser.add_argument('--sfc-dir',  type=str, default=None)
-parser.add_argument('--vad-dir',  type=str, default=None)
-parser.add_argument('--no-browser', action='store_true')
+parser.add_argument('--data-dir', type=str, default=None)   # directory containing PPI .cdf files
+parser.add_argument('--sfc-dir',  type=str, default=None)   # directory containing surface obs .txt files
+parser.add_argument('--vad-dir',  type=str, default=None)   # directory containing VAD .cdf files
+parser.add_argument('--no-browser', action='store_true')    # suppress auto-opening the browser
 parser.add_argument('--test-ppi', action='store_true',
                     help='Start in historical PPI mode using the most recent file in data-dir')
 parser.add_argument('--test-vad', action='store_true',
                     help='Start in historical VAD mode using the most recent file in vad-dir')
 args, _ = parser.parse_known_args()
 
+# JSON config file sits next to this script; CLI args take precedence over it
 CONFIG_FILE = Path(__file__).parent / 'ppiview.config.json'
 
 def load_config():
@@ -38,13 +31,15 @@ def load_config():
     return {}
 
 _CFG      = load_config()
+# Resolve directories: CLI arg → config file → default test_data subfolder
 DATA_DIR  = Path(args.data_dir or _CFG.get('data_dir', str(Path(__file__).parent / 'test_data'))).expanduser()
 SFC_DIR   = Path(args.sfc_dir  or _CFG.get('sfc_dir',  str(Path(__file__).parent / 'test_data'))).expanduser()
 VAD_DIR   = Path(args.vad_dir  or _CFG.get('vad_dir',  str(Path(__file__).parent / 'test_data'))).expanduser()
 HTTP_PORT = int(_CFG.get('http_port', 8050))
 
-# Pre-sample cmocean.phase at 36 stops (one per 10° bin) for injection into templates
 def _sample_phase_cmap() -> list[list[int]]:
+    # Sample the cmocean 'phase' colormap at 36 evenly-spaced points (one per 10° of wind direction)
+    # and convert to integer RGB triplets for use in the frontend wind-direction renderer.
     cmap = cmocean.cm.phase
     return [[round(r*255), round(g*255), round(b*255)]
             for r, g, b, _ in (cmap(i / 36) for i in range(36))]
@@ -52,6 +47,8 @@ def _sample_phase_cmap() -> list[list[int]]:
 PHASE_CM = _sample_phase_cmap()
 
 def _detect_test_date(directory: Path, pattern: str, date_re: str) -> str | None:
+    # Scan the directory for files matching the ARM naming convention and extract
+    # the YYYYMMDD date from the most recent file so the UI can pre-select it.
     import re
     files = sorted(glob.glob(str(directory / pattern)))
     if not files:
@@ -59,6 +56,7 @@ def _detect_test_date(directory: Path, pattern: str, date_re: str) -> str | None
     m = re.search(date_re, Path(files[-1]).name)
     return m.group(1) if m else None
 
+# Only detect test dates when the corresponding test flag is set; None means "live/today" mode.
 TEST_DATE     = _detect_test_date(DATA_DIR, '*.b1.????????.*.cdf', r'\.b1\.(\d{8})\.') if args.test_ppi else None
 TEST_VAD_DATE = _detect_test_date(VAD_DIR,  '*.c1.????????.*.cdf', r'\.c1\.(\d{8})\.') if args.test_vad else None
 
@@ -68,24 +66,25 @@ def _log(msg):
 
 app = Flask(__name__)
 
-# ── Surface obs / heading ──────────────────────────────────────────────────────
 def find_sfc_file(date: datetime) -> Path | None:
     pattern = str(SFC_DIR / f'{date.strftime("%Y%m%d")}.txt')
     files = glob.glob(pattern)
     return Path(files[0]) if files else None
 
 def load_surface_series(sfc_path: Path) -> list[dict]:
-    """Return list of surface samples with UTC seconds, heading, and location."""
     series: list[dict] = []
     with open(sfc_path) as f:
         reader = csv.DictReader(f)
         for row in reader:
             try:
+                # gps_time is stored as a 6-digit HHMMSS integer (possibly float-encoded)
                 t = str(int(float(row['gps_time']))).zfill(6)
+                # Convert HHMMSS → total seconds since midnight for easy nearest-neighbor lookup
                 t_s = int(t[:2]) * 3600 + int(t[2:4]) * 60 + int(t[4:6])
                 compass = float(row['compass_dir'])
                 lat = float(row['lat'])
                 lon = float(row['lon'])
+                # Skip rows with non-finite values (GPS dropouts, fill values, etc.)
                 if math.isfinite(compass) and math.isfinite(lat) and math.isfinite(lon):
                     series.append({
                         't_s': t_s,
@@ -97,6 +96,7 @@ def load_surface_series(sfc_path: Path) -> list[dict]:
                 continue
     return series
 
+# Per-day cache so surface files are only parsed once per date
 _hdg_cache: dict[str, list] = {}
 
 def _get_hdg_series(date: datetime) -> list:
@@ -107,14 +107,17 @@ def _get_hdg_series(date: datetime) -> list:
     return _hdg_cache[key]
 
 def _heading_at(series: list, ts: float) -> float:
-    """Nearest-neighbour heading lookup by epoch timestamp."""
+    """Return the compass heading (degrees) closest in time to Unix timestamp ts.
+    Falls back to 0.0 (North) when no surface data is available."""
     if not series:
         return 0.0
     dt = datetime.fromtimestamp(ts, tz=timezone.utc)
     t_s = dt.hour * 3600 + dt.minute * 60 + dt.second
+    # Linear scan is fast enough; the series is typically a few thousand rows/day
     return min(series, key=lambda x: abs(x['t_s'] - t_s))['heading']
 
 def _surface_sample_at(series: list, ts: float) -> dict | None:
+    """Return the full surface record (heading, lat, lon) closest in time to ts."""
     if not series:
         return None
     dt = datetime.fromtimestamp(ts, tz=timezone.utc)
@@ -122,21 +125,26 @@ def _surface_sample_at(series: list, ts: float) -> dict | None:
     return min(series, key=lambda x: abs(x['t_s'] - t_s))
 
 def infer_timezone_name(lat: float, lon: float) -> str:
-    """Approximate IANA time zone from truck coordinates.
+    """Heuristically map a lat/lon to an IANA timezone name using bounding boxes.
 
-    This app runs without a timezone polygon database, so we use bounded
-    heuristics for the US where the truck normally operates.
+    This avoids a full tzdata shapefile lookup while covering the deployment regions
+    (Hawaii, Alaska, Arizona no-DST zone, and the four contiguous US time zones).
+    Anything outside these boxes falls back to a fixed UTC offset derived from longitude.
     """
     if not (math.isfinite(lat) and math.isfinite(lon)):
         return 'UTC'
 
+    # Hawaii (no DST)
     if 18 <= lat <= 23 and -161 <= lon <= -154:
         return 'Pacific/Honolulu'
+    # Alaska
     if 51 <= lat <= 72 and -171 <= lon <= -129:
         return 'America/Anchorage'
+    # Arizona (Mountain time but no DST)
     if 31 <= lat <= 37.5 and -115.1 <= lon <= -109.0:
         return 'America/Phoenix'
 
+    # Contiguous US: split by longitude boundaries (approximate zone edges)
     if 24 <= lat <= 50 and -125 <= lon <= -66:
         if lon <= -114:
             return 'America/Los_Angeles'
@@ -146,6 +154,8 @@ def infer_timezone_name(lat: float, lon: float) -> str:
             return 'America/Chicago'
         return 'America/New_York'
 
+    # Outside covered regions: derive a fixed-offset zone from longitude (15° per hour).
+    # Note: Etc/GMT sign convention is inverted relative to UTC offset (Etc/GMT-5 = UTC+5).
     offset_hours = int(round(lon / 15.0))
     sign = '-' if offset_hours >= 0 else '+'
     return f'Etc/GMT{sign}{abs(offset_hours)}'
@@ -175,14 +185,12 @@ def local_time_info(ts: float, surface_sample: dict | None) -> dict:
         'lon': round(float(lon), 5) if lon is not None and math.isfinite(lon) else None,
     }
 
-# ── VAD helpers ──────────────────────────────────────────────────────────────
 def find_vad_file(date: datetime) -> Path | None:
     pattern = str(VAD_DIR / f'*.c1.{date.strftime("%Y%m%d")}.*.cdf')
     files = sorted(glob.glob(pattern))
     return Path(files[-1]) if files else None
 
 def load_vad(path: Path) -> dict:
-    """Return VAD time-height data from a daily VAD NetCDF file."""
     ds = nc.Dataset(str(path))
     try:
         base_time   = int(ds.variables['base_time'][:])
@@ -206,7 +214,6 @@ def load_vad(path: Path) -> dict:
     finally:
         ds.close()
 
-# ── NetCDF helpers ────────────────────────────────────────────────────────────
 def find_daily_file(date: datetime) -> Path | None:
     pattern = str(DATA_DIR / f'*.b1.{date.strftime("%Y%m%d")}.*.cdf')
     files = sorted(glob.glob(pattern))
@@ -216,52 +223,64 @@ def today_file() -> Path | None:
     return find_daily_file(datetime.now(timezone.utc))
 
 def _fill_nan(arr) -> np.ndarray:
-    """Masked array → float64, fill values and inf → NaN."""
+    # NetCDF masked arrays use a fill value (often 9.96921e+36) to represent missing data.
+    # Convert to float64 and replace both masked values and any non-finite leftovers with NaN.
     out = np.ma.filled(arr.astype(np.float64), fill_value=np.nan)
     out[~np.isfinite(out)] = np.nan
     return out
 
 def _to_list2d(arr: np.ndarray, decimals: int | None = None) -> list:
-    """2D float array → nested Python list, NaN/inf → None (JSON null)."""
+    # Round to reduce JSON payload size, then replace NaN/inf with None so the
+    # result is valid JSON (JSON has no NaN literal).
     if decimals is not None:
         arr = np.round(arr, decimals)
     obj = np.where(np.isfinite(arr), arr, None)
     return obj.tolist()
 
 def compute_vorticity(v: np.ndarray, az: np.ndarray, r: np.ndarray) -> np.ndarray:
-    """Centred finite-difference radial vorticity (s⁻¹).
-    v : (n_rays, n_range)  float64, NaN where missing
-    az: (n_rays,)          degrees, sorted ascending (lidar frame)
-    r : (n_range,)         km
+    """Estimate radial-velocity vorticity using a central-difference scheme in azimuth.
+
+    The discrete approximation is:
+        ζ ≈ (1 / r) * ∂v/∂θ  ≈  (v[i+1] - v[i-1]) / (r * Δθ)
+    where θ is in radians and r is in metres.
+    The first and last ray cannot be differenced, so they remain NaN.
     """
     vort = np.full_like(v, np.nan)
     if v.shape[0] >= 3:
+        # Central difference in azimuth (radians); skip 2 rays at each end of the sweep
         daz = np.deg2rad(az[2:]) - np.deg2rad(az[:-2])
         with np.errstate(invalid='ignore', divide='ignore'):
+            # r is in km → convert to metres so vorticity is in s⁻¹
             vort[1:-1, :] = ((v[2:, :] - v[:-2, :]) / daz[:, None]) / (r[None, :] * 1000.0)
     return vort
 
 def compute_circulation(vort: np.ndarray, az: np.ndarray, r: np.ndarray,
                         radius_m: float = 250.0) -> np.ndarray:
-    """Moving-window circulation (m²/s) within a disk of radius_m at each grid point.
-    vort: (n_rays, n_range) s⁻¹
-    az  : (n_rays,)         degrees, sorted ascending
-    r   : (n_range,)        km
+    """Compute local circulation Γ by integrating vorticity flux over a disk of radius_m metres.
+
+    For each radar gate, sum ζ * dA over all gates within radius_m, where the area element is:
+        dA = r * dr * dθ  (polar area in m²)
+
+    A cKDTree on Cartesian gate positions makes the neighbourhood query O(N log N).
+    NaN vorticity gates contribute zero flux (conservative, avoids missing-data inflation).
     """
     if len(az) < 2:
         return np.full((len(az), len(r)), np.nan)
-    r_m  = r * 1000.0
+    r_m  = r * 1000.0                                    # km → m
     dr   = float(r_m[1] - r_m[0]) if len(r_m) > 1 else float(r_m[0])
-    daz  = np.abs(np.gradient(np.deg2rad(az)))          # (n_rays,) radians
-    area = r_m[None, :] * dr * daz[:, None]             # (n_rays, n_gates) m²
+    daz  = np.abs(np.gradient(np.deg2rad(az)))           # (n_rays,) per-ray angular width in radians
+    area = r_m[None, :] * dr * daz[:, None]              # (n_rays, n_gates) m²: polar area element
     with np.errstate(invalid='ignore'):
+        # Treat NaN vorticity as zero so missing gates don't propagate into the sum
         flux = np.where(np.isfinite(vort), vort * area, 0.0)
 
+    # Convert polar (az, r) to Cartesian (x, y) for spatial indexing
     az_rad = np.deg2rad(az)
-    x = np.outer(np.sin(az_rad), r_m)                   # (n_rays, n_gates)
+    x = np.outer(np.sin(az_rad), r_m)                    # (n_rays, n_gates)
     y = np.outer(np.cos(az_rad), r_m)
     pts = np.column_stack([x.ravel(), y.ravel()])
 
+    # Query all points within radius_m of each gate and accumulate their flux
     tree      = cKDTree(pts)
     neighbors = tree.query_ball_point(pts, r=radius_m)
     flux_flat = flux.ravel()
@@ -269,11 +288,17 @@ def compute_circulation(vort: np.ndarray, az: np.ndarray, r: np.ndarray,
     return circ_flat.reshape(vort.shape)
 
 def load_scans(path: Path, hdg: list | None = None) -> list[dict]:
-    """Return scan metadata list sorted by time."""
+    """Return a lightweight metadata list for every scan (snum) in the file.
+
+    Each entry contains only the fields needed to populate the scan-selector UI;
+    the full ray/gate arrays are not loaded here (see load_scan_data).
+    """
     ds = nc.Dataset(str(path))
     try:
+        # base_time is a single Unix epoch integer; time_offset is seconds since base_time
         base_time   = int(ds.variables['base_time'][:])
         time_offset = _fill_nan(ds.variables['time_offset'][:])
+        # snum groups rays into discrete PPI sweeps
         snum        = ds.variables['snum'][:].data.astype(int)
         azimuth     = _fill_nan(ds.variables['azimuth'][:])
         elevation   = _fill_nan(ds.variables['elevation'][:])
@@ -282,7 +307,7 @@ def load_scans(path: Path, hdg: list | None = None) -> list[dict]:
         for s in np.unique(snum):
             mask = snum == s
             t    = base_time + time_offset[mask]
-            ts   = float(np.nanmean(t))
+            ts   = float(np.nanmean(t))             # representative timestamp for this sweep
             h    = _heading_at(hdg, ts) if hdg else 0.0
             loc  = _surface_sample_at(hdg, ts) if hdg else None
             tloc = local_time_info(ts, loc)
@@ -304,7 +329,11 @@ def load_scans(path: Path, hdg: list | None = None) -> list[dict]:
         ds.close()
 
 def load_scan_data(path: Path, snum_target: int, hdg: list | None = None) -> dict:
-    """Return full polar data for one scan."""
+    """Load all ray/gate data for a single PPI sweep and derive computed fields.
+
+    Returns a dict ready to JSON-serialise and send to the browser. Heavy fields
+    (velocity, vorticity, circulation, etc.) are (n_rays × n_gates) 2-D lists.
+    """
     ds = nc.Dataset(str(path))
     try:
         base_time   = int(ds.variables['base_time'][:])
@@ -315,7 +344,7 @@ def load_scan_data(path: Path, snum_target: int, hdg: list | None = None) -> dic
             return {}
 
         azimuth     = _fill_nan(ds.variables['azimuth'][mask])
-        r           = _fill_nan(ds.variables['range'][:])
+        r           = _fill_nan(ds.variables['range'][:])      # range gates, shape (n_gates,)
         velocity    = _fill_nan(ds.variables['velocity'][mask])
         intensity   = _fill_nan(ds.variables['intensity'][mask])
         backscatter = _fill_nan(ds.variables['backscatter'][mask])
@@ -340,9 +369,10 @@ def load_scan_data(path: Path, snum_target: int, hdg: list | None = None) -> dic
         heading  = _heading_at(hdg, ts) if hdg else 0.0
         loc      = _surface_sample_at(hdg, ts) if hdg else None
         tloc     = local_time_info(ts, loc)
+        # Rotate raw lidar azimuths into geographic (North-referenced) frame
         true_az  = (azimuth + heading) % 360.0
 
-        # Vorticity and circulation use sorted raw azimuth
+        # Vorticity and circulation use sorted raw azimuth so angles are monotonic
         vorticity   = compute_vorticity(velocity, azimuth, r)
         circulation = compute_circulation(vorticity, azimuth, r)
 
@@ -368,12 +398,12 @@ def load_scan_data(path: Path, snum_target: int, hdg: list | None = None) -> dic
     finally:
         ds.close()
 
-# ── Scan cache ────────────────────────────────────────────────────────────────
+# Shared state for the live-update pipeline; all writes must hold _cache_lock
 _cache_lock  = threading.Lock()
-_scan_list   = []
-_latest_snum = None
-_sse_cond    = threading.Condition()
-_sse_seq     = 0
+_scan_list   = []          # most-recent scan metadata list (updated by _watcher)
+_latest_snum = None        # snum of the newest scan seen
+_sse_cond    = threading.Condition()  # used to wake SSE clients when a new scan arrives
+_sse_seq     = 0           # monotonically incremented each time a new scan is detected
 
 # keyed by (date_str, snum) → scan data dict
 _scan_data_cache: dict[tuple, dict] = {}
@@ -383,7 +413,12 @@ _precompute_state      = None
 _precompute_state_lock = threading.Lock()
 
 def _precompute_date(date_str: str, path: Path, show_progress: bool = False) -> None:
-    """Compute and cache all scan data for a given date file."""
+    """Pre-populate _scan_data_cache for every scan in a day's file.
+
+    Runs in a background thread (or blocking at startup with show_progress=True).
+    Skips scans already in cache so it is safe to call multiple times.
+    _precompute_state tracks the active date so the UI can show a progress indicator.
+    """
     global _precompute_state
     with _precompute_state_lock:
         _precompute_state = date_str
@@ -391,6 +426,7 @@ def _precompute_date(date_str: str, path: Path, show_progress: bool = False) -> 
         date = datetime.strptime(date_str, '%Y%m%d').replace(tzinfo=timezone.utc)
         hdg  = _get_hdg_series(date)
         scans = load_scans(path, hdg)
+        # Wrap in tqdm for terminal progress bar when called at startup
         it = tqdm(scans, desc=f'Computing circulation ({date_str})', unit='scan') \
              if show_progress else scans
         for meta in it:
@@ -402,10 +438,16 @@ def _precompute_date(date_str: str, path: Path, show_progress: bool = False) -> 
                 with _cache_lock:
                     _scan_data_cache[key] = data
     finally:
+        # Always clear state so the UI stops showing the progress indicator
         with _precompute_state_lock:
             _precompute_state = None
 
 def _watcher():
+    """Background thread that polls today's data file every 15 seconds.
+
+    When a new scan number appears, it increments _sse_seq and notifies all
+    waiting SSE connections so the browser receives a push event immediately.
+    """
     global _scan_list, _latest_snum, _sse_seq
     while True:
         try:
@@ -421,6 +463,7 @@ def _watcher():
                         _scan_list   = scans
                         _latest_snum = newest
                     if changed:
+                        # Wake all SSE clients so they can push the new snum to the browser
                         with _sse_cond:
                             _sse_seq += 1
                             _sse_cond.notify_all()
@@ -429,9 +472,9 @@ def _watcher():
             _log(f'Watcher error: {e}')
         time.sleep(15)
 
+# Start watcher as a daemon so it exits automatically when the main process exits
 threading.Thread(target=_watcher, daemon=True).start()
 
-# ── Routes ────────────────────────────────────────────────────────────────────
 def _parse_date(date_str: str | None) -> datetime:
     if date_str:
         return datetime.strptime(date_str, '%Y%m%d').replace(tzinfo=timezone.utc)
@@ -450,7 +493,7 @@ def scans():
     if not path or not path.exists():
         return jsonify({'scans': [], 'file': None})
 
-    if not date_str:                       # today — try in-memory cache first
+    if not date_str:                       # today — serve the in-memory list without re-reading disk
         with _cache_lock:
             if _scan_list:
                 return jsonify({'scans': list(_scan_list), 'file': path.name})
@@ -523,12 +566,20 @@ def precompute():
 
 @app.route('/stream')
 def stream():
+    """Server-Sent Events endpoint — pushes a JSON object whenever a new scan is detected.
+
+    The browser opens one persistent connection here; _watcher notifies _sse_cond when
+    _sse_seq increments. A keep-alive comment is sent every ~20 s to prevent proxy timeouts.
+    X-Accel-Buffering: no disables nginx's response buffering so events arrive immediately.
+    """
     def generate():
+        # Snapshot the current sequence number so we only send genuinely new events
         with _sse_cond:
             last_seq = _sse_seq
         try:
             while True:
                 with _sse_cond:
+                    # Block until _sse_seq changes or 20-second timeout fires
                     changed = _sse_cond.wait_for(lambda: _sse_seq != last_seq, timeout=20)
                     if changed:
                         with _cache_lock:
@@ -536,15 +587,17 @@ def stream():
                         last_seq = _sse_seq
                         yield f'data: {json.dumps({"snum": snum})}\n\n'
                     else:
+                        # SSE comment line — not dispatched as an event but keeps the TCP connection alive
                         yield ': keep-alive\n\n'
         except GeneratorExit:
-            pass
+            pass  # client disconnected; generator cleanup is automatic
 
     return Response(generate(), mimetype='text/event-stream',
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
-# ── Main ──────────────────────────────────────────────────────────────────────
 def get_local_ip():
+    # Trick: open a UDP socket to a public address without actually sending data;
+    # the OS fills in the source address, revealing the machine's LAN IP.
     s = None
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

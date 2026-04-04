@@ -231,11 +231,7 @@
     }
 
     .ppi-wrap canvas {
-      cursor: grab;
-    }
-
-    .ppi-wrap canvas.dragging {
-      cursor: grabbing;
+      cursor: crosshair;
     }
 
     /* ── Sidebar ───────────────────────────────────────────────────────────── */
@@ -501,10 +497,12 @@ const S = {
     maxZoom: 12,
     panX: 0,
     panY: 0,
-    pointerId: null,
-    lastX: 0,
-    lastY: 0,
-    moved: false,
+    // circle-zoom drag state
+    dragActive: false,
+    dragPointerId: null,
+    dragCx: 0,   // center x in CSS px
+    dragCy: 0,   // center y in CSS px
+    dragR: 0,    // current radius in CSS px
   },
 };
 
@@ -524,6 +522,55 @@ function clampViewport() {
   const maxPan = S.renderR * (1 - 1 / S.view.zoom);
   S.view.panX = clamp(S.view.panX, -maxPan, maxPan);
   S.view.panY = clamp(S.view.panY, -maxPan, maxPan);
+}
+
+// Draw the circle-zoom drag preview overlay on top of both canvases
+function drawDragOverlay() {
+  ['left-canvas', 'right-canvas'].forEach(id => {
+    const canvas = document.getElementById(id);
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    // Convert CSS px drag coords to canvas px
+    const cx = S.view.dragCx * dpr;
+    const cy = S.view.dragCy * dpr;
+    const r  = S.view.dragR  * dpr;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(137, 180, 250, 0.85)';  // --blue
+    ctx.lineWidth   = 1.5 * dpr;
+    ctx.setLineDash([4 * dpr, 4 * dpr]);
+    ctx.beginPath();
+    ctx.arc(cx, cy, Math.max(1, r), 0, 2 * Math.PI);
+    ctx.stroke();
+    // Crosshair at center
+    ctx.setLineDash([]);
+    ctx.lineWidth = 1 * dpr;
+    const arm = 6 * dpr;
+    ctx.beginPath();
+    ctx.moveTo(cx - arm, cy); ctx.lineTo(cx + arm, cy);
+    ctx.moveTo(cx, cy - arm); ctx.lineTo(cx, cy + arm);
+    ctx.stroke();
+    ctx.restore();
+  });
+}
+
+// Apply a circle zoom: the circle (cx_css, cy_css, r_css) in CSS px on the canvas
+// becomes the new viewport — both panels share the same world-space view.
+function applyCircleZoom(cx_css, cy_css, r_css, canvasWidth, canvasHeight) {
+  if (S.renderR === null || r_css < 4) return;
+  // World-space center of the circle
+  const world = worldFromScreen(cx_css, cy_css, canvasWidth, canvasHeight, S.renderR);
+  // The circle radius in CSS px maps to r_css / (baseScale * zoom) km in world space
+  // After zoom, we want that world radius to fill half the canvas
+  const baseScale = cssBaseScale(canvasWidth, canvasHeight, S.renderR);
+  const worldR = r_css / (baseScale * S.view.zoom);
+  // New zoom: half the canvas (in km) should equal worldR
+  const halfCanvas_km = Math.min(canvasWidth, canvasHeight) * 0.44 / baseScale;
+  const newZoom = clamp(halfCanvas_km / worldR, S.view.minZoom, S.view.maxZoom);
+  S.view.zoom = newZoom;
+  S.view.panX = world.x;
+  S.view.panY = world.y;
+  clampViewport();
 }
 
 function cssBaseScale(width, height, maxRangeKm) {
@@ -1161,10 +1208,11 @@ function handleViewportWheel(e) {
 function handlePointerDown(e) {
   if (e.button !== 0 || S.renderR === null) return;
   const canvas = e.currentTarget;
-  S.view.pointerId = e.pointerId;
-  S.view.lastX = e.offsetX;
-  S.view.lastY = e.offsetY;
-  S.view.moved = false;
+  S.view.dragActive    = true;
+  S.view.dragPointerId = e.pointerId;
+  S.view.dragCx = e.offsetX;
+  S.view.dragCy = e.offsetY;
+  S.view.dragR  = 0;
   canvas.classList.add('dragging');
   canvas.setPointerCapture(e.pointerId);
 }
@@ -1172,30 +1220,27 @@ function handlePointerDown(e) {
 function handlePointerMove(e) {
   handleCursorMove(e);
 
-  if (S.view.pointerId !== e.pointerId || S.renderR === null) return;
-  const canvas = e.currentTarget;
-  const width = canvas.offsetWidth;
-  const height = canvas.offsetHeight;
-  if (!width || !height) return;
-
-  const baseScale = cssBaseScale(width, height, S.renderR);
-  const dx = e.offsetX - S.view.lastX;
-  const dy = e.offsetY - S.view.lastY;
-  if (dx === 0 && dy === 0) return;
-
-  S.view.panX -= dx / (baseScale * S.view.zoom);
-  S.view.panY += dy / (baseScale * S.view.zoom);
-  S.view.lastX = e.offsetX;
-  S.view.lastY = e.offsetY;
-  S.view.moved = true;
-  clampViewport();
+  if (!S.view.dragActive || S.view.dragPointerId !== e.pointerId || S.renderR === null) return;
+  const dx = e.offsetX - S.view.dragCx;
+  const dy = e.offsetY - S.view.dragCy;
+  S.view.dragR = Math.sqrt(dx * dx + dy * dy);
+  // Re-render both panels then draw the overlay on top
   renderVisible();
+  drawDragOverlay();
 }
 
 function endPointerDrag(e) {
-  if (S.view.pointerId !== e.pointerId) return;
+  if (!S.view.dragActive || S.view.dragPointerId !== e.pointerId) return;
   e.currentTarget.classList.remove('dragging');
-  S.view.pointerId = null;
+  S.view.dragActive    = false;
+  S.view.dragPointerId = null;
+  // Apply zoom if the drag was meaningful
+  if (S.view.dragR > 4) {
+    const canvas = e.currentTarget;
+    applyCircleZoom(S.view.dragCx, S.view.dragCy, S.view.dragR,
+                    canvas.offsetWidth, canvas.offsetHeight);
+  }
+  renderVisible();
 }
 
 function handleViewportDoubleClick() {

@@ -66,9 +66,12 @@
       width: 8px; height: 8px;
       border-radius: 50%;
       background: var(--green);
+      transition: background 0.3s;
       flex-shrink: 0;
     }
-    #conn-dot.off { background: var(--red); }
+    #conn-dot.stale { background: var(--orange); }
+    #conn-dot.off   { background: var(--red); }
+    #last-update.stale { color: var(--orange); }
 
     #date-input {
       background: var(--muted);
@@ -85,7 +88,7 @@
       display: flex;
       align-items: center;
       gap: 6px;
-      font-size: 0.72rem;
+      font-size: 0.68rem;
       padding: 2px 0;
       cursor: pointer;
       color: var(--subtext);
@@ -162,6 +165,32 @@
 
     #hodo-canvas { display: block; }
 
+    #kine-card {
+      border-top: 1px solid var(--border);
+      padding: 6px 10px;
+      flex-shrink: 0;
+    }
+
+    #kine-card .card-title {
+      font-size: 0.60rem;
+      color: var(--subtext);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      margin-bottom: 4px;
+    }
+
+    #kine-card .cv-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      padding: 2px 0;
+      font-size: 0.68rem;
+      border-bottom: 1px solid var(--border);
+    }
+    #kine-card .cv-row:last-child { border-bottom: none; }
+    #kine-card .cv-label { color: var(--subtext); }
+    #kine-card .cv-val   { font-weight: 600; color: var(--text); }
+
     /* ── Time-height column (right) ────────────────────────────────────────── */
     #th-col {
       flex: 1;
@@ -188,12 +217,13 @@
       width: 100%;
       height: 100%;
       cursor: crosshair;
+      user-select: none;
     }
 
-    /* ── Scrubber bar ──────────────────────────────────────────────────────── */
-    #scrubber-bar {
+    /* ── Controls bar ───────────────────────────────────────────────────────── */
+    #controls {
       background: var(--surface);
-      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
       padding: 5px 14px;
       display: flex;
       align-items: center;
@@ -217,6 +247,7 @@
     }
     .pb-btn:hover:not(:disabled) { border-color: var(--subtext); }
     .pb-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    #btn-play.playing { border-color: var(--blue); color: var(--blue); }
 
     #scrubber-wrap {
       flex: 1;
@@ -241,6 +272,22 @@
       overflow: hidden;
       text-overflow: ellipsis;
     }
+
+    #cursor-bar {
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      padding: 3px 14px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-shrink: 0;
+      font-size: 0.68rem;
+      color: var(--subtext);
+      min-height: 22px;
+    }
+    .cur-item { display: flex; gap: 5px; }
+    .cur-lbl  { color: var(--muted); }
+    .cur-val  { color: var(--text); font-weight: 600; min-width: 6ch; }
   </style>
 </head>
 <body>
@@ -252,14 +299,28 @@
     <span id="status-msg">No data</span>
     <input type="date" id="date-input">
     <label class="tog-row"><input type="checkbox" id="tog-r2" checked> r² filter</label>
-    <div id="r2-thresh-row" style="font-size:0.72rem; color:var(--subtext);">
+    <div id="r2-thresh-row" style="font-size:0.68rem; color:var(--subtext);">
       Threshold&nbsp;
       <input type="number" id="r2-thresh" value="0.30" step="0.01" min="0" max="1"
              style="width:52px; background:var(--muted); color:var(--text); border:1px solid var(--border);
-                    border-radius:3px; padding:1px 4px; font-family:inherit; font-size:0.72rem;">
+                    border-radius:3px; padding:1px 4px; font-family:inherit; font-size:0.68rem;">
     </div>
   </div>
 </header>
+
+<div id="controls">
+  <div id="playback">
+    <button class="pb-btn" id="btn-first" title="First step"    disabled>⏮</button>
+    <button class="pb-btn" id="btn-prev"  title="Previous step" disabled>⏪</button>
+    <button class="pb-btn" id="btn-play"  title="Play / Pause"  disabled>▶</button>
+    <button class="pb-btn" id="btn-next"  title="Next step"     disabled>⏩</button>
+    <button class="pb-btn" id="btn-last"  title="Last step"     disabled>⏭</button>
+  </div>
+  <div id="scrubber-wrap">
+    <input type="range" id="scrubber" min="0" max="0" value="0" step="1" disabled>
+    <div id="scrub-label">-- UTC  (0 / 0)</div>
+  </div>
+</div>
 
 <div id="main">
   <!-- Left: Hodograph -->
@@ -274,6 +335,15 @@
     </div>
     <div class="canvas-wrap" id="hodo-wrap">
       <canvas id="hodo-canvas"></canvas>
+    </div>
+    <div id="kine-card">
+      <div class="card-title">Kinematics</div>
+      <div class="cv-row"><span class="cv-label">Shear 0–500 m</span><span class="cv-val" id="ks-500">--</span></div>
+      <div class="cv-row"><span class="cv-label">GRW 0–500 m</span><span class="cv-val"  id="kg-500">--</span></div>
+      <div class="cv-row"><span class="cv-label">Shear 0–1 km</span><span class="cv-val" id="ks-1">--</span></div>
+      <div class="cv-row"><span class="cv-label">GRW 0–1 km</span><span class="cv-val"  id="kg-1">--</span></div>
+      <div class="cv-row"><span class="cv-label">Shear 0–3 km</span><span class="cv-val" id="ks-3">--</span></div>
+      <div class="cv-row"><span class="cv-label">GRW 0–3 km</span><span class="cv-val"  id="kg-3">--</span></div>
     </div>
   </div>
 
@@ -302,16 +372,12 @@
   </div>
 </div>
 
-<!-- Scrubber -->
-<div id="scrubber-bar">
-  <div id="playback">
-    <button class="pb-btn" id="btn-prev" title="Previous step" disabled>⏪</button>
-    <button class="pb-btn" id="btn-next" title="Next step"     disabled>⏩</button>
-  </div>
-  <div id="scrubber-wrap">
-    <input type="range" id="scrubber" min="0" max="0" value="0" step="1" disabled>
-    <div id="scrub-label">-- UTC</div>
-  </div>
+<div id="cursor-bar">
+  <span class="cur-item"><span class="cur-lbl">time</span><span class="cur-val" id="cur-time">--</span></span>
+  <span class="cur-item"><span class="cur-lbl">height</span><span class="cur-val" id="cur-height">--</span></span>
+  <span class="cur-item"><span class="cur-lbl">value</span><span class="cur-val" id="cur-value">--</span></span>
+  <span class="cur-item" id="cur-wspd-item" style="display:none"><span class="cur-lbl">wspd</span><span class="cur-val" id="cur-wspd">--</span></span>
+  <span class="cur-item" id="cur-wdir-item" style="display:none"><span class="cur-lbl">wdir</span><span class="cur-val" id="cur-wdir">--</span></span>
 </div>
 
 <script>
@@ -326,7 +392,7 @@ const MAX_SPEED_RING = 25;   // m/s — outermost hodograph ring
 
 // Viridis-like sequential (purple → teal → yellow) for hodograph height
 const HEIGHT_CM = [
-  [ 68,   1,  84],  // 0.00
+  [130,  60, 180],  // 0.00
   [ 59,  82, 139],  // 0.25
   [ 33, 145, 140],  // 0.50
   [ 94, 201,  98],  // 0.75
@@ -367,7 +433,13 @@ function wdirColor(deg) {
 
 // ── Application state ─────────────────────────────────────────────────────────
 const D = { timestamps: [], height_km: [], wdir: [], wspd: [], r_sq: [] };
-const S = { timeIdx: 0, r2Filter: true, r2Thresh: 0.30, hClip: 0 };
+const S = {
+  timeIdx: 0, r2Filter: true, r2Thresh: 0.30, hClip: 0,
+  // Zoom window — null means full range
+  zoom: { tMin: null, tMax: null, hMin: null, hMax: null },
+  // Drag state for th canvas selection
+  drag: { active: false, startX: 0, startY: 0, endX: 0, endY: 0, canvas: null },
+};
 
 // Pre-rendered offscreen canvases for time-height images
 let wspdOff = null, wdirOff = null;
@@ -389,8 +461,11 @@ const connDot      = document.getElementById('conn-dot');
 const statusMsg = document.getElementById('status-msg');
 const hodoTitle = document.getElementById('hodo-title');
 const hodoCbMax = document.getElementById('hodo-cb-max');
+const btnFirst  = document.getElementById('btn-first');
 const btnPrev   = document.getElementById('btn-prev');
+const btnPlay   = document.getElementById('btn-play');
 const btnNext   = document.getElementById('btn-next');
+const btnLast   = document.getElementById('btn-last');
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 function fmtUTC(unix) {
@@ -435,23 +510,66 @@ function redrawColorbars() {
   drawColorbar(wdirCbCvs, t => wdirColor(t * 360) || [30, 30, 46]);
 }
 
+// ── Zoom helpers ──────────────────────────────────────────────────────────────
+function zoomedTRange() {
+  const nT = D.timestamps.length;
+  if (!nT) return { t0: 0, t1: 0 };
+  const t0 = S.zoom.tMin !== null ? S.zoom.tMin : 0;
+  const t1 = S.zoom.tMax !== null ? S.zoom.tMax : nT - 1;
+  return { t0: Math.max(0, t0), t1: Math.min(nT - 1, t1) };
+}
+
+function zoomedHRange() {
+  const nH = S.hClip;
+  if (!nH) return { h0: 0, h1: 0 };
+  const h0 = S.zoom.hMin !== null ? S.zoom.hMin : 0;
+  const h1 = S.zoom.hMax !== null ? S.zoom.hMax : nH - 1;
+  return { h0: Math.max(0, h0), h1: Math.min(nH - 1, h1) };
+}
+
+function resetZoom() {
+  S.zoom = { tMin: null, tMax: null, hMin: null, hMax: null };
+  // Restore scrubber to full range
+  const nT = D.timestamps.length;
+  if (nT) {
+    scrubber.min = 0;
+    scrubber.max = nT - 1;
+    S.timeIdx = Math.max(0, Math.min(S.timeIdx, nT - 1));
+    scrubber.value = S.timeIdx;
+  }
+  renderAll();
+}
+
+function applyZoom(tMin, tMax, hMin, hMax) {
+  S.zoom.tMin = tMin; S.zoom.tMax = tMax;
+  S.zoom.hMin = hMin; S.zoom.hMax = hMax;
+  // Clamp timeIdx into the new window
+  S.timeIdx = Math.max(tMin, Math.min(tMax, S.timeIdx));
+  scrubber.min   = tMin;
+  scrubber.max   = tMax;
+  scrubber.value = S.timeIdx;
+  renderAll();
+}
+
 // ── Time-height offscreen pre-render ──────────────────────────────────────────
 function buildTHOffscreen(masked2d, cmFn, vmin, vmax) {
-  const nT = masked2d.length;
-  const nH = S.hClip;
-  if (!nT || !nH) return null;
+  const { t0, t1 } = zoomedTRange();
+  const { h0, h1 } = zoomedHRange();
+  const nT = t1 - t0 + 1;
+  const nH = h1 - h0 + 1;
+  if (nT <= 0 || nH <= 0) return null;
 
   const tmp = document.createElement('canvas');
   tmp.width = nT; tmp.height = nH;
   const ctx = tmp.getContext('2d');
   const img = ctx.createImageData(nT, nH);
-  const BG  = [30, 30, 46];  // --surface-ish
+  const BG  = [30, 30, 46];
 
-  for (let t = 0; t < nT; t++) {
-    for (let h = 0; h < nH; h++) {
-      const v  = masked2d[t]?.[h];
-      const py = nH - 1 - h;       // flip: height 0 at bottom
-      const pi = (py * nT + t) * 4;
+  for (let ti = 0; ti < nT; ti++) {
+    for (let hi = 0; hi < nH; hi++) {
+      const v  = masked2d[t0 + ti]?.[h0 + hi];
+      const py = nH - 1 - hi;       // flip: height 0 at bottom
+      const pi = (py * nT + ti) * 4;
       if (v === null || v === undefined) {
         img.data[pi] = BG[0]; img.data[pi+1] = BG[1]; img.data[pi+2] = BG[2];
       } else {
@@ -495,16 +613,17 @@ function drawTH(canvas, offscreen) {
   const pH = H - TH_M.top  - TH_M.bottom;
   if (pW <= 0 || pH <= 0) return;
 
-  // Scaled data image (nearest-neighbor)
   if (offscreen) {
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(offscreen, pX, pY, pW, pH);
   }
 
-  // Vertical cursor line
-  const nT = D.timestamps.length;
-  if (nT > 0) {
-    const cx = pX + (S.timeIdx + 0.5) / nT * pW;
+  // Vertical cursor line — position relative to zoomed time window
+  const { t0, t1 } = zoomedTRange();
+  const { h0, h1 } = zoomedHRange();
+  const nTZoom = t1 - t0 + 1;
+  if (nTZoom > 0) {
+    const cx = pX + (S.timeIdx - t0 + 0.5) / nTZoom * pW;
     ctx.strokeStyle = 'rgba(205, 214, 244, 0.85)';
     ctx.lineWidth = 1.5;
     ctx.beginPath();
@@ -515,39 +634,61 @@ function drawTH(canvas, offscreen) {
 
   ctx.font = '10px ui-monospace, monospace';
 
-  // Y-axis: height labels (km)
-  const nH   = S.hClip;
-  const maxH = D.height_km[nH - 1] ?? MAX_HEIGHT_KM;
+  // Y-axis: height labels for zoomed range
+  const hLo  = D.height_km[h0] ?? 0;
+  const hHi  = D.height_km[h1] ?? MAX_HEIGHT_KM;
+  const hSpan = hHi - hLo;
   ctx.textAlign = 'right';
   ctx.textBaseline = 'middle';
-  for (let km = 0; km <= Math.ceil(maxH); km++) {
-    if (km > maxH) break;
-    const frac = km / maxH;
+  const hStep = hSpan <= 1 ? 0.25 : hSpan <= 2 ? 0.5 : 1;
+  for (let km = Math.ceil(hLo / hStep) * hStep; km <= hHi + 1e-9; km += hStep) {
+    if (km > hHi + 1e-9) break;
+    const frac = hSpan > 0 ? (km - hLo) / hSpan : 0;
     const py   = pY + pH - frac * pH;
     ctx.fillStyle = '#a6adc8';
-    ctx.fillText(`${km}`, pX - 4, py);
+    ctx.fillText(km % 1 === 0 ? `${km}` : km.toFixed(2), pX - 4, py);
     ctx.strokeStyle = '#45475a';
     ctx.lineWidth = 0.5;
     ctx.beginPath(); ctx.moveTo(pX - 3, py); ctx.lineTo(pX, py); ctx.stroke();
   }
 
-  // X-axis: time labels (HH:MM UTC)
-  if (nT > 0) {
+  // X-axis: time labels for zoomed range
+  if (nTZoom > 0) {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
-    const nTicks = Math.min(6, nT);
+    const nTicks = Math.min(6, nTZoom);
     for (let i = 0; i <= nTicks; i++) {
-      const ti = Math.min(nT - 1, Math.round(i * (nT - 1) / nTicks));
-      const px = pX + (ti + 0.5) / nT * pW;
+      const ti = t0 + Math.min(nTZoom - 1, Math.round(i * (nTZoom - 1) / nTicks));
+      const px = pX + (ti - t0 + 0.5) / nTZoom * pW;
       ctx.fillStyle = '#a6adc8';
       ctx.fillText(fmtUTC(D.timestamps[ti]), px, pY + pH + 3);
     }
   }
 
-  // Plot border
   ctx.strokeStyle = '#313244';
   ctx.lineWidth = 1;
   ctx.strokeRect(pX, pY, pW, pH);
+
+  // Draw drag selection rectangle if active on this canvas
+  if (S.drag.active && S.drag.canvas === canvas) {
+    const r = canvas.getBoundingClientRect();
+    const sx = S.drag.startX - r.left - TH_M.left;
+    const ex = S.drag.endX   - r.left - TH_M.left;
+    const sy = S.drag.startY - r.top  - TH_M.top;
+    const ey = S.drag.endY   - r.top  - TH_M.top;
+    const rx = Math.min(sx, ex) + pX - TH_M.left;
+    const ry = Math.min(sy, ey) + pY - TH_M.top;
+    const rw = Math.abs(ex - sx);
+    const rh = Math.abs(ey - sy);
+    ctx.save();
+    ctx.strokeStyle = 'rgba(137, 180, 250, 0.85)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 4]);
+    ctx.strokeRect(rx, ry, rw, rh);
+    ctx.fillStyle = 'rgba(137, 180, 250, 0.12)';
+    ctx.fillRect(rx, ry, rw, rh);
+    ctx.restore();
+  }
 }
 
 // ── Hodograph render ──────────────────────────────────────────────────────────
@@ -613,19 +754,23 @@ function drawHodograph() {
   if (!wspd || !wdir) return;
 
   const nH   = S.hClip;
-  const maxH = D.height_km[nH - 1] ?? MAX_HEIGHT_KM;
+  const { h0, h1 } = zoomedHRange();
+  const maxH = D.height_km[h1] ?? MAX_HEIGHT_KM;
+  const minH = D.height_km[h0] ?? 0;
+  const hSpan = maxH - minH;
 
-  // Collect valid (U, V, heightFraction) points
+  // Collect valid (U, V, heightFraction) points within zoomed height range
   const pts = [];
-  for (let h = 0; h < nH; h++) {
+  for (let h = h0; h <= h1; h++) {
     const sp = wspd[h], wd = wdir[h], rq = r_sq?.[h];
     if (sp === null || wd === null || sp === undefined || wd === undefined) continue;
     if (S.r2Filter && rq !== null && rq !== undefined && rq < S.r2Thresh) continue;
     const rad = wd * Math.PI / 180;
+    // wdir is FROM direction; negate both components to get the wind vector (where it blows TO)
     pts.push({
-      px: cx + sp * Math.sin(rad) * scale,
-      py: cy - sp * Math.cos(rad) * scale,
-      t:  D.height_km[h] / maxH,
+      px: cx - sp * Math.sin(rad) * scale,
+      py: cy + sp * Math.cos(rad) * scale,
+      t:  hSpan > 0 ? (D.height_km[h] - minH) / hSpan : 0,
     });
   }
 
@@ -657,20 +802,113 @@ function drawHodograph() {
   }
 }
 
-// ── Render all ────────────────────────────────────────────────────────────────
+// ── Kinematics ────────────────────────────────────────────────────────────────
+// Linear interpolation of u/v onto an exact height level from the profile arrays.
+// Returns null if the target height is outside the available valid data range.
+function interpUV(wspd, wdir, r2, heightKm, targetKm) {
+  const { h0, h1 } = zoomedHRange();
+  let lo = null, hi = null;
+  for (let h = h0; h <= h1; h++) {
+    const sp = wspd[h], wd = wdir[h], rq = r2?.[h];
+    if (sp === null || sp === undefined || wd === null || wd === undefined) continue;
+    if (S.r2Filter && rq !== null && rq !== undefined && rq < S.r2Thresh) continue;
+    if (heightKm[h] <= targetKm) lo = h;
+    if (heightKm[h] >= targetKm && hi === null) hi = h;
+  }
+  if (lo === null || hi === null) return null;
+  if (lo === hi) {
+    const rad = wdir[lo] * Math.PI / 180;
+    return { u: -wspd[lo] * Math.sin(rad), v: wspd[lo] * Math.cos(rad) };
+  }
+  const t   = (targetKm - heightKm[lo]) / (heightKm[hi] - heightKm[lo]);
+  const r0  = wdir[lo] * Math.PI / 180, r1 = wdir[hi] * Math.PI / 180;
+  const u0  = -wspd[lo] * Math.sin(r0), v0 = wspd[lo] * Math.cos(r0);
+  const u1  = -wspd[hi] * Math.sin(r1), v1 = wspd[hi] * Math.cos(r1);
+  return { u: u0 + (u1 - u0) * t, v: v0 + (v1 - v0) * t };
+}
+
+// Mean u/v over a layer by averaging all valid levels within [0, topKm]
+function layerMeanUV(wspd, wdir, r2, heightKm, topKm) {
+  const { h0, h1 } = zoomedHRange();
+  let su = 0, sv = 0, n = 0;
+  for (let h = h0; h <= h1; h++) {
+    if (heightKm[h] > topKm) break;
+    const sp = wspd[h], wd = wdir[h], rq = r2?.[h];
+    if (sp === null || sp === undefined || wd === null || wd === undefined) continue;
+    if (S.r2Filter && rq !== null && rq !== undefined && rq < S.r2Thresh) continue;
+    const rad = wd * Math.PI / 180;
+    su += -sp * Math.sin(rad);
+    sv +=  sp * Math.cos(rad);
+    n++;
+  }
+  return n > 0 ? { u: su / n, v: sv / n } : null;
+}
+
+function uvToSpdDir(u, v) {
+  const spd = Math.sqrt(u*u + v*v);
+  // atan2(-u, v) gives the FROM direction (met convention)
+  let dir = Math.atan2(-u, v) * 180 / Math.PI;
+  if (dir < 0) dir += 360;
+  return { spd, dir };
+}
+
+function computeKinematics() {
+  const wspd = D.wspd[S.timeIdx];
+  const wdir = D.wdir[S.timeIdx];
+  const r2   = D.r_sq[S.timeIdx];
+  const hkm  = D.height_km;
+  const { h0, h1 } = zoomedHRange();
+
+  const layers = [
+    { topKm: 0.5, sId: 'ks-500', gId: 'kg-500' },
+    { topKm: 1.0, sId: 'ks-1',   gId: 'kg-1'   },
+    { topKm: 3.0, sId: 'ks-3',   gId: 'kg-3'   },
+  ];
+
+  // Surface wind: lowest valid level within zoomed range
+  let sfcUV = null;
+  for (let h = h0; h <= h1; h++) {
+    const sp = wspd?.[h], wd = wdir?.[h], rq = r2?.[h];
+    if (sp === null || sp === undefined || wd === null || wd === undefined) continue;
+    if (S.r2Filter && rq !== null && rq !== undefined && rq < S.r2Thresh) continue;
+    const rad = wd * Math.PI / 180;
+    sfcUV = { u: -sp * Math.sin(rad), v: sp * Math.cos(rad) };
+    break;
+  }
+
+  for (const { topKm, sId, gId } of layers) {
+    const maxAvail = hkm[h1] ?? 0;
+    if (!wspd || !wdir || !sfcUV || maxAvail < topKm * 0.5) {
+      document.getElementById(sId).textContent = '--';
+      document.getElementById(gId).textContent = '--';
+      continue;
+    }
+
+    const topUV  = interpUV(wspd, wdir, r2, hkm, topKm);
+    const shear  = topUV ? Math.sqrt((topUV.u - sfcUV.u)**2 + (topUV.v - sfcUV.v)**2) : null;
+    const meanUV = layerMeanUV(wspd, wdir, r2, hkm, topKm);
+    const grw    = meanUV ? uvToSpdDir(meanUV.u, meanUV.v) : null;
+
+    document.getElementById(sId).textContent = shear !== null ? `${shear.toFixed(1)} m/s` : '--';
+    document.getElementById(gId).textContent = grw   !== null ? `${grw.spd.toFixed(1)} m/s ${Math.round(grw.dir)}°` : '--';
+  }
+}
+
+
 function renderAll() {
   drawHodograph();
   drawTH(wspdCvs, wspdOff);
   drawTH(wdirCvs, wdirOff);
   updateScrubLabel();
+  computeKinematics();
 }
 
 function updateScrubLabel() {
   const nT = D.timestamps.length;
   if (nT > 0 && D.timestamps[S.timeIdx] !== undefined) {
-    scrubLbl.textContent = `${S.timeIdx + 1} / ${nT}  ·  ${fmtUTC(D.timestamps[S.timeIdx])}`;
+    scrubLbl.textContent = `${fmtUTC(D.timestamps[S.timeIdx])}  (${S.timeIdx + 1} / ${nT})`;
   } else {
-    scrubLbl.textContent = '-- UTC';
+    scrubLbl.textContent = '-- UTC  (0 / 0)';
   }
 }
 
@@ -698,8 +936,8 @@ function loadData(date) {
       scrubber.max     = Math.max(0, nT - 1);
       scrubber.value   = 0;
       scrubber.disabled = nT === 0;
-      btnPrev.disabled  = nT === 0;
-      btnNext.disabled  = nT === 0;
+      btnFirst.disabled = btnPrev.disabled = btnPlay.disabled =
+      btnNext.disabled  = btnLast.disabled = nT === 0;
       S.timeIdx = 0;
 
       statusMsg.textContent = `${nT} time steps · ${S.hClip} height levels`;
@@ -714,17 +952,60 @@ function loadData(date) {
 }
 
 // ── Event handlers ────────────────────────────────────────────────────────────
+// Playback
+let _playTimer = null, _isPlaying = false;
+
+function _setPlaying(on) {
+  _isPlaying = on;
+  btnPlay.textContent = on ? '⏸' : '▶';
+  btnPlay.classList.toggle('playing', on);
+}
+
+function _stepTo(idx) {
+  S.timeIdx = Math.max(0, Math.min(D.timestamps.length - 1, idx));
+  scrubber.value = S.timeIdx;
+  renderAll();
+}
+
+function _play() {
+  if (_isPlaying || !D.timestamps.length) return;
+  _setPlaying(true);
+  _playTimer = setInterval(() => {
+    if (S.timeIdx < D.timestamps.length - 1) { _stepTo(S.timeIdx + 1); }
+    else { _pause(); }
+  }, 150);
+}
+
+function _pause() {
+  _setPlaying(false);
+  clearInterval(_playTimer);
+  _playTimer = null;
+}
+
+btnFirst.addEventListener('click', () => { _pause(); _stepTo(0); });
+btnLast.addEventListener('click',  () => { _pause(); _stepTo(D.timestamps.length - 1); });
+btnPlay.addEventListener('click',  () => _isPlaying ? _pause() : _play());
+
+btnPrev.addEventListener('click', () => { _pause(); _stepTo(S.timeIdx - 1); });
+btnNext.addEventListener('click', () => { _pause(); _stepTo(S.timeIdx + 1); });
+
 scrubber.addEventListener('input', () => {
-  S.timeIdx = +scrubber.value;
+  _pause();
+  const { t0, t1 } = zoomedTRange();
+  S.timeIdx = Math.max(t0, Math.min(t1, +scrubber.value));
+  scrubber.value = S.timeIdx;
   renderAll();
 });
 
-btnPrev.addEventListener('click', () => {
-  if (S.timeIdx > 0) { S.timeIdx--; scrubber.value = S.timeIdx; renderAll(); }
-});
-
-btnNext.addEventListener('click', () => {
-  if (S.timeIdx < D.timestamps.length - 1) { S.timeIdx++; scrubber.value = S.timeIdx; renderAll(); }
+// Hold-to-repeat on prev/next
+let _holdTimer = null;
+function _startHold(dir) { _holdTimer = setInterval(() => _stepTo(S.timeIdx + dir), 150); }
+function _stopHold()     { clearInterval(_holdTimer); _holdTimer = null; }
+btnPrev.addEventListener('mousedown', () => _startHold(-1));
+btnNext.addEventListener('mousedown', () => _startHold( 1));
+['mouseup', 'mouseleave'].forEach(ev => {
+  btnPrev.addEventListener(ev, _stopHold);
+  btnNext.addEventListener(ev, _stopHold);
 });
 
 dateInput.addEventListener('change', () => {
@@ -744,24 +1025,188 @@ r2ThreshInp.addEventListener('change', e => {
   if (S.r2Filter) { rebuildOffscreens(); renderAll(); }
 });
 
-// Click / scrub on time-height canvases → update time index
-function thClick(canvas, e) {
-  const nT = D.timestamps.length;
-  if (!nT) return;
+// ── TH canvas drag-to-zoom ────────────────────────────────────────────────────
+function thCoordsFromClient(canvas, clientX, clientY) {
   const rect = canvas.getBoundingClientRect();
-  const pW   = rect.width - TH_M.left - TH_M.right;
-  const x    = e.clientX - rect.left - TH_M.left;
-  S.timeIdx  = Math.max(0, Math.min(nT - 1, Math.floor(x / pW * nT)));
-  scrubber.value = S.timeIdx;
+  const pW   = rect.width  - TH_M.left - TH_M.right;
+  const pH   = rect.height - TH_M.top  - TH_M.bottom;
+  const x    = clientX - rect.left - TH_M.left;
+  const y    = clientY - rect.top  - TH_M.top;
+  const { t0, t1 } = zoomedTRange();
+  const { h0, h1 } = zoomedHRange();
+  const nTZ = t1 - t0 + 1;
+  const nHZ = h1 - h0 + 1;
+  const tIdx = t0 + Math.max(0, Math.min(nTZ - 1, Math.floor(x / pW * nTZ)));
+  const hIdx = h0 + Math.max(0, Math.min(nHZ - 1, nHZ - 1 - Math.floor(y / pH * nHZ)));
+  return { tIdx, hIdx, inPlot: x >= 0 && y >= 0 && x <= pW && y <= pH };
+}
+
+function thDragStart(canvas, e) {
+  if (e.button !== 0) return;
+  S.drag.active  = true;
+  S.drag.canvas  = canvas;
+  S.drag.startX  = e.clientX;
+  S.drag.startY  = e.clientY;
+  S.drag.endX    = e.clientX;
+  S.drag.endY    = e.clientY;
+}
+
+function thDragMove(canvas, e) {
+  if (!S.drag.active) {
+    handleTHMove(canvas === wspdCvs ? 'wspd' : 'wdir', canvas, e);
+    return;
+  }
+  S.drag.endX = e.clientX;
+  S.drag.endY = e.clientY;
+  // Mirror drag rect to the other canvas
+  S.drag.canvas = canvas;
+  drawTH(wspdCvs, wspdOff);
+  drawTH(wdirCvs, wdirOff);
+}
+
+function thDragEnd(canvas, e) {
+  if (!S.drag.active) return;
+  S.drag.active = false;
+
+  const rect = canvas.getBoundingClientRect();
+  const pW   = rect.width  - TH_M.left - TH_M.right;
+  const pH   = rect.height - TH_M.top  - TH_M.bottom;
+
+  const sx = S.drag.startX - rect.left - TH_M.left;
+  const ex = S.drag.endX   - rect.left - TH_M.left;
+  const sy = S.drag.startY - rect.top  - TH_M.top;
+  const ey = S.drag.endY   - rect.top  - TH_M.top;
+
+  const dragW = Math.abs(ex - sx);
+  const dragH = Math.abs(ey - sy);
+  if (dragW < 5 && dragH < 5) { renderAll(); return; }  // treat as click, no zoom
+
+  const { t0, t1 } = zoomedTRange();
+  const { h0, h1 } = zoomedHRange();
+  const nTZ = t1 - t0 + 1;
+  const nHZ = h1 - h0 + 1;
+
+  const tA = t0 + Math.max(0, Math.min(nTZ - 1, Math.floor(Math.min(sx, ex) / pW * nTZ)));
+  const tB = t0 + Math.max(0, Math.min(nTZ - 1, Math.floor(Math.max(sx, ex) / pW * nTZ)));
+  const hA = h0 + Math.max(0, Math.min(nHZ - 1, nHZ - 1 - Math.floor(Math.max(sy, ey) / pH * nHZ)));
+  const hB = h0 + Math.max(0, Math.min(nHZ - 1, nHZ - 1 - Math.floor(Math.min(sy, ey) / pH * nHZ)));
+
+  if (tA === tB || hA === hB) { renderAll(); return; }
+  applyZoom(tA, tB, hA, hB);
+  rebuildOffscreens();
   renderAll();
 }
 
-wspdCvs.addEventListener('click',     e => thClick(wspdCvs, e));
-wdirCvs.addEventListener('click',     e => thClick(wdirCvs, e));
-wspdCvs.addEventListener('mousemove', e => { if (e.buttons) thClick(wspdCvs, e); });
-wdirCvs.addEventListener('mousemove', e => { if (e.buttons) thClick(wdirCvs, e); });
+[wspdCvs, wdirCvs].forEach(cvs => {
+  cvs.addEventListener('mousedown',  e => thDragStart(cvs, e));
+  cvs.addEventListener('mousemove',  e => thDragMove(cvs, e));
+  cvs.addEventListener('mouseup',    e => thDragEnd(cvs, e));
+  cvs.addEventListener('mouseleave', e => { if (S.drag.active) thDragEnd(cvs, e); else clearCursor(); });
+  cvs.addEventListener('dblclick',   () => resetZoom());
+});
 
-// ── ResizeObserver ────────────────────────────────────────────────────────────
+// Cursor readout on time-height canvases (handled inside thDragMove above)
+wspdCvs.addEventListener('mousemove', e => handleTHMove('wspd', wspdCvs, e));
+wdirCvs.addEventListener('mousemove', e => handleTHMove('wdir', wdirCvs, e));
+
+// Cursor readout on hodograph
+hodoCvs.addEventListener('mousemove', handleHodoMove);
+hodoCvs.addEventListener('mouseleave', clearCursor);
+
+// ── Cursor readout ────────────────────────────────────────────────────────────
+const curTime   = document.getElementById('cur-time');
+const curHeight = document.getElementById('cur-height');
+const curValue  = document.getElementById('cur-value');
+const curWspd   = document.getElementById('cur-wspd');
+const curWdir   = document.getElementById('cur-wdir');
+const curWspdItem = document.getElementById('cur-wspd-item');
+const curWdirItem = document.getElementById('cur-wdir-item');
+
+function clearCursor() {
+  curTime.textContent = curHeight.textContent = curValue.textContent = '--';
+  curWspdItem.style.display = curWdirItem.style.display = 'none';
+}
+
+// Map a mouse position on a time-height canvas to (timeIdx, heightIdx)
+function thCoordsFromEvent(canvas, e) {
+  const rect = canvas.getBoundingClientRect();
+  const pW   = rect.width  - TH_M.left - TH_M.right;
+  const pH   = rect.height - TH_M.top  - TH_M.bottom;
+  const x    = e.clientX - rect.left - TH_M.left;
+  const y    = e.clientY - rect.top  - TH_M.top;
+  if (x < 0 || y < 0 || x > pW || y > pH) return null;
+  const { t0, t1 } = zoomedTRange();
+  const { h0, h1 } = zoomedHRange();
+  const nTZ = t1 - t0 + 1;
+  const nHZ = h1 - h0 + 1;
+  const tIdx = t0 + Math.max(0, Math.min(nTZ - 1, Math.floor(x / pW * nTZ)));
+  const hIdx = h0 + Math.max(0, Math.min(nHZ - 1, nHZ - 1 - Math.floor(y / pH * nHZ)));
+  return { tIdx, hIdx };
+}
+
+function handleTHMove(field, canvas, e) {
+  const coords = thCoordsFromEvent(canvas, e);
+  if (!coords) { clearCursor(); return; }
+  const { tIdx, hIdx } = coords;
+
+  const ts  = D.timestamps[tIdx];
+  const hkm = D.height_km[hIdx];
+  const src = field === 'wspd' ? D.wspd : D.wdir;
+  const raw = src?.[tIdx]?.[hIdx];
+  const masked = S.r2Filter && (D.r_sq?.[tIdx]?.[hIdx] ?? 1) < S.r2Thresh ? null : raw;
+
+  curTime.textContent   = ts !== undefined ? fmtUTC(ts) : '--';
+  curHeight.textContent = hkm !== undefined ? `${hkm.toFixed(2)} km` : '--';
+  curValue.textContent  = masked !== null && masked !== undefined
+    ? (field === 'wspd' ? `${masked.toFixed(1)} m/s` : `${masked.toFixed(0)}°`)  : '--';
+  curWspdItem.style.display = curWdirItem.style.display = 'none';
+}
+
+function handleHodoMove(e) {
+  if (!D.timestamps.length) { clearCursor(); return; }
+  const wrap   = document.getElementById('hodo-wrap');
+  const rect   = wrap.getBoundingClientRect();
+  const side   = Math.min(rect.width, rect.height);
+  const margin = 38;
+  const cx     = rect.left + rect.width  / 2;
+  const cy     = rect.top  + rect.height / 2;
+  const radius = side / 2 - margin;
+  const scale  = radius / MAX_SPEED_RING;
+
+  // Canvas-space offset from centre
+  const dx = e.clientX - cx;
+  const dy = e.clientY - cy;
+  if (Math.sqrt(dx*dx + dy*dy) > radius + 10) { clearCursor(); return; }
+
+  const wspd = D.wspd[S.timeIdx];
+  const wdir = D.wdir[S.timeIdx];
+  if (!wspd || !wdir) { clearCursor(); return; }
+
+  // Find the plotted point closest to the cursor
+  let bestDist = Infinity, bestH = -1;
+  for (let h = 0; h < S.hClip; h++) {
+    const sp = wspd[h], wd = wdir[h], rq = D.r_sq?.[S.timeIdx]?.[h];
+    if (sp === null || wd === null || sp === undefined || wd === undefined) continue;
+    if (S.r2Filter && rq !== null && rq !== undefined && rq < S.r2Thresh) continue;
+    const rad = wd * Math.PI / 180;
+    const px  = -sp * Math.sin(rad) * scale;  // same sign convention as drawHodograph
+    const py  =  sp * Math.cos(rad) * scale;
+    const d   = Math.hypot(dx - px, dy - py);
+    if (d < bestDist) { bestDist = d; bestH = h; }
+  }
+
+  if (bestH < 0 || bestDist > 30) { clearCursor(); return; }
+
+  const ts  = D.timestamps[S.timeIdx];
+  const hkm = D.height_km[bestH];
+  curTime.textContent   = ts !== undefined ? fmtUTC(ts) : '--';
+  curHeight.textContent = hkm !== undefined ? `${hkm.toFixed(2)} km` : '--';
+  curValue.textContent  = '--';
+  curWspd.textContent   = `${wspd[bestH].toFixed(1)} m/s`;
+  curWdir.textContent   = `${wdir[bestH].toFixed(0)}°`;
+  curWspdItem.style.display = curWdirItem.style.display = '';
+}
+
 const ro = new ResizeObserver(() => {
   redrawColorbars();
   if (D.timestamps.length) renderAll();
