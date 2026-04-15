@@ -320,6 +320,9 @@
     <input type="range" id="scrubber" min="0" max="0" value="0" step="1" disabled>
     <div id="scrub-label">-- local / -- UTC  (0 / 0)</div>
   </div>
+  <div style="display:flex; gap:8px; align-items:center; margin-left:8px;">
+    <button id="btn-save-both" class="btn" title="Save both panels as one PNG" disabled>Save Both PNG</button>
+  </div>
 </div>
 
 <main>
@@ -1088,8 +1091,9 @@ function setConnState(state) {
 }
 
 function enableControls(on) {
-  ['btn-first','btn-rew','btn-play','btn-ff','btn-last','scrubber'].forEach(id => {
-    document.getElementById(id).disabled = !on;
+  ['btn-first','btn-rew','btn-play','btn-ff','btn-last','scrubber','btn-save-both'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !on;
   });
 }
 
@@ -1361,6 +1365,145 @@ async function init() {
 }
 
 document.addEventListener('DOMContentLoaded', init);
+
+// Client-side PNG download helper
+function downloadCanvasAsPNG(canvas, filename) {
+  try {
+    const url = canvas.toDataURL('image/png');
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } catch (e) {
+    console.error('Failed to download PNG:', e);
+    alert('Unable to export PNG.');
+  }
+}
+
+// Wire up Save PNG buttons
+function _capitalize(s){ return s && s.charAt(0).toUpperCase() + s.slice(1); }
+
+document.addEventListener('DOMContentLoaded', () => {
+  const saveBothBtn = document.getElementById('btn-save-both');
+  if (saveBothBtn) {
+    saveBothBtn.addEventListener('click', async () => {
+      if (S.idx < 0 || S.idx >= S.scans.length) { alert('No scan selected'); return; }
+      // Ensure canvases are up-to-date
+      await renderCurrent();
+      const lc = document.getElementById('left-canvas');
+      const rc = document.getElementById('right-canvas');
+      const lcb = document.getElementById('left-cb');
+      const rcb = document.getElementById('right-cb');
+      if (!lc || !rc) { alert('Canvas missing'); return; }
+
+      const dpr = window.devicePixelRatio || 1;
+      const gap = Math.round(20 * dpr);
+      const titleH = Math.round(56 * dpr); // bigger title area for two-line title
+      const cbH = Math.round(14 * dpr);
+      const labelH = Math.round(20 * dpr);
+      const cbToCanvGap = Math.round(12 * dpr); // extra space between colorbar and axes
+      const metaH = Math.round(20 * dpr);
+      const canvasH = Math.max(lc.height, rc.height);
+      const width = lc.width + gap + rc.width;
+      const height = titleH + cbH + labelH + cbToCanvGap + canvasH + metaH + Math.round(12 * dpr);
+
+      const out = document.createElement('canvas');
+      out.width = width; out.height = height;
+      const ctx = out.getContext('2d');
+      // Background
+      ctx.fillStyle = '#1e1e2e'; ctx.fillRect(0,0,width,height);
+
+      const leftX = 0; const rightX = lc.width + gap;
+      const cbY = titleH;
+
+      // Title (two-line: local / UTC on second line)
+      const meta = S.scans[S.idx] || {};
+      const title = `PPI Viewer — ${_capitalize(S.leftField)} | ${_capitalize(S.rightField)}`;
+      let utcTxt = ''; let localTxt = '';
+      if (meta && meta.timestamp) {
+        const dt = new Date(meta.timestamp * 1000);
+        utcTxt = dt.toISOString().slice(0,19).replace('T',' ') + ' UTC';
+        // local time string (date and time)
+        localTxt = dt.toLocaleString();
+      } else {
+        const dt2 = new Date();
+        utcTxt = dt2.toISOString().slice(0,19).replace('T',' ') + ' UTC';
+        localTxt = dt2.toLocaleString();
+      }
+
+      ctx.fillStyle = '#cfe2ff'; ctx.font = `${16 * dpr}px ui-monospace, monospace`; ctx.textAlign = 'center';
+      ctx.fillText(title, width / 2, Math.round(18 * dpr));
+      ctx.fillStyle = '#cdd6f4'; ctx.font = `${12 * dpr}px ui-monospace, monospace`;
+      ctx.fillText(`${localTxt} / ${utcTxt}`, width / 2, Math.round(18 * dpr) + Math.round(16 * dpr));
+
+      // Draw colorbars scaled to canvas widths
+      if (lcb) ctx.drawImage(lcb, leftX, cbY, lc.width, cbH);
+      if (rcb) ctx.drawImage(rcb, rightX, cbY, rc.width, cbH);
+
+      // Draw colorbar ticks and labels
+      function drawCBLabels(x, w, field, y) {
+        const cfg = FIELD_CFG[field] || {};
+        const leftLbl = cfg.minLbl || '';
+        const midLbl  = cfg.unit || '';
+        const rightLbl= cfg.maxLbl || '';
+        const labY = y + cbH + Math.round(12 * dpr);
+        ctx.fillStyle = '#a6adc8'; ctx.font = `${11 * dpr}px ui-monospace, monospace`;
+        ctx.textAlign = 'left'; ctx.fillText(leftLbl, x + 2 * dpr, labY);
+        ctx.textAlign = 'center'; ctx.fillText(midLbl, x + w / 2, labY);
+        ctx.textAlign = 'right'; ctx.fillText(rightLbl, x + w - 2 * dpr, labY);
+        // ticks
+        const tickY = y + cbH;
+        const tickH = Math.round(6 * dpr);
+        ctx.strokeStyle = '#cdd6f4'; ctx.lineWidth = Math.max(1, Math.round(1 * dpr));
+        ctx.beginPath();
+        ctx.moveTo(x + 4 * dpr, tickY); ctx.lineTo(x + 4 * dpr, tickY + tickH);
+        ctx.moveTo(x + w / 2, tickY); ctx.lineTo(x + w / 2, tickY + tickH);
+        ctx.moveTo(x + w - 4 * dpr, tickY); ctx.lineTo(x + w - 4 * dpr, tickY + tickH);
+        ctx.stroke();
+      }
+
+      drawCBLabels(leftX, lc.width, S.leftField, cbY);
+      drawCBLabels(rightX, rc.width, S.rightField, cbY);
+
+      // Variable labels above colorbars
+      ctx.fillStyle = '#cdd6f4'; ctx.font = `${13 * dpr}px ui-monospace, monospace`; ctx.textAlign = 'center';
+      const leftLabel = `${_capitalize(S.leftField)} (${FIELD_CFG[S.leftField].unit})`;
+      const rightLabel= `${_capitalize(S.rightField)} (${FIELD_CFG[S.rightField].unit})`;
+      ctx.fillText(leftLabel, leftX + lc.width / 2, cbY - Math.round(8 * dpr));
+      ctx.fillText(rightLabel, rightX + rc.width / 2, cbY - Math.round(8 * dpr));
+
+      // Draw canvases (with extra gap from colorbars)
+      const canvY = cbY + cbH + labelH + cbToCanvGap;
+      ctx.drawImage(lc, leftX, canvY, lc.width, canvasH);
+      ctx.drawImage(rc, rightX, canvY, rc.width, canvasH);
+
+      // Small borders
+      ctx.strokeStyle = '#313244'; ctx.lineWidth = Math.max(1, Math.round(1 * dpr));
+      ctx.strokeRect(leftX + 0.5, canvY + 0.5, lc.width - 1, canvasH - 1);
+      ctx.strokeRect(rightX + 0.5, canvY + 0.5, rc.width - 1, canvasH - 1);
+
+      // Meta line under canvases
+      ctx.fillStyle = '#a6adc8'; ctx.font = `${11 * dpr}px ui-monospace, monospace`; ctx.textAlign = 'left';
+      const metaTxt = `Scan #${meta.snum || '--'}   Elev ${meta.elevation || '--'}°   Hdg ${meta.heading || '--'}°`;
+      ctx.fillText(metaTxt, 4 * dpr, canvY + canvasH + Math.round(16 * dpr));
+
+      // Filename using scan UTC timestamp: nssl_ppi_YYYYMMDD_HHMMSS.png
+      const dtName = meta && meta.timestamp ? new Date(meta.timestamp * 1000) : new Date();
+      const y = dtName.getUTCFullYear();
+      const mo = String(dtName.getUTCMonth() + 1).padStart(2,'0');
+      const da = String(dtName.getUTCDate()).padStart(2,'0');
+      const hh = String(dtName.getUTCHours()).padStart(2,'0');
+      const mm = String(dtName.getUTCMinutes()).padStart(2,'0');
+      const ss = String(dtName.getUTCSeconds()).padStart(2,'0');
+      const filename = `nssl_ppi_${y}${mo}${da}_${hh}${mm}${ss}.png`;
+
+      downloadCanvasAsPNG(out, filename);
+    });
+  }
+});
+
 </script>
 </body>
 </html>
