@@ -70,18 +70,18 @@ Data directories can also be passed as CLI flags, which take precedence over the
 
 ```bash
 # Live mode — watches today's data files and updates in real time
-python ppi_view.py
+python lid_viewer.py
 
 # Override data directories at runtime
-python ppi_view.py --data-dir /path/to/ppi --sfc-dir /path/to/sfc \
+python lid_viewer.py --data-dir /path/to/ppi --sfc-dir /path/to/sfc \
                    --vad-dir /path/to/vad --rhi-dir /path/to/rhi
 
 # Test/historical mode — loads the most recent file for each scan type
 # and opens the dashboard with all viewers pre-loaded on that date
-python ppi_view.py --test
+python lid_viewer.py --test
 
 # Suppress automatic browser launch
-python ppi_view.py --no-browser
+python lid_viewer.py --no-browser
 ```
 
 The dashboard opens at `http://<host-ip>:8050`. Individual viewers are at `/ppi`, `/rhi`, and `/vad`.
