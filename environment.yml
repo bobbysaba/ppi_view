@@ -1,4 +1,4 @@
-name: ppi_view
+name: lid_viewer
 channels:
   - conda-forge
   - defaults

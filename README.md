@@ -1,24 +1,41 @@
-# ppi_view
+# NSSL DL Truck Data Viewer
 
-Real-time PPI (Plan Position Indicator) and VAD viewer for NSSL Doppler lidar data. Serves a browser-based interface that displays radial velocity, vorticity, circulation, backscatter, and intensity from daily NetCDF files, with optional surface obs overlay for truck heading and GPS position. A separate VAD viewer displays hodograph and time-height wind speed/direction plots.
+Real-time browser-based viewer for NSSL Doppler lidar data collected from the DL Truck platform. Displays PPI, RHI, and VAD scan types from daily NetCDF files, with optional surface obs overlay for platform heading and GPS position.
 
 ## Features
 
-**PPI viewer**
+**Dashboard**
+- Unified landing page with live status cards for PPI, RHI, and VAD
+- Per-card last-scan age (color-coded green / orange / red), scan count, and UTC time range for the day
+- Hourly scan-count sparkline for PPI
+- Platform position and heading (lat, lon, heading) sourced from co-located surface obs
+- Data gap alert banner when any scan type has not updated in > 10 minutes
+- Date picker pre-selects a historical date across all viewers before opening one
+
+**PPI viewer** (`/ppi`)
 - Displays radial velocity, backscatter, and intensity from Doppler lidar PPI sweeps
 - Computes and renders **vorticity** (central-difference ∂v/∂θ) and **local circulation** (area-integrated vorticity within a 250 m radius) as derived products
-- Rotates raw lidar azimuths into a geographic (North-referenced) frame using platform heading from co-located surface obs
-- Live mode polls today's data file every 15 seconds and pushes new scans to the browser via **Server-Sent Events** — no manual refresh needed
-- Background **precomputation** calculates derived fields for all scans at startup so switching between sweeps is instant
+- Rotates raw lidar azimuths into a geographic (North-referenced) frame using platform heading from surface obs
+- Live mode polls today's data file every 15 seconds and pushes new scans to the browser via **Server-Sent Events**
+- Background **precomputation** calculates circulation for all scans at startup so switching between sweeps is instant
+- Dual-panel layout with independent field selection, shared zoom/pan, and circle-drag zoom
+- Cursor readout of range, bearing, and field values at the pointer position
 
-**VAD viewer**
+**RHI viewer** (`/rhi`)
+- Cartesian cross-section rendering (x = horizontal range, y = height AGL)
+- Displays radial velocity, backscatter, and intensity
+- Overlays: height grid lines (AGL), range rings, elevation angle grid, ground baseline
+- Same dual-panel layout, zoom/pan, and cursor readout as the PPI viewer
+
+**VAD viewer** (`/vad`)
 - Time-height plots of wind speed, wind direction, vertical velocity (w), RMS error, and R²
 - **Hodograph** rendering of the horizontal wind profile at a selected time step
-- Wind direction encoded with the cmocean `phase` colormap for intuitive rotational display
+- Wind direction encoded with the cmocean `phase` colormap
 
 **Platform support**
-- Infers local timezone from GPS position (covers Hawaii, Alaska, Arizona, and the four contiguous US zones) so all scan timestamps display in local time
-- Exposes the LAN IP at startup so the viewer is immediately accessible from any device on the same network
+- Infers local timezone from GPS position (covers Hawaii, Alaska, Arizona, and the four contiguous US zones)
+- Exposes the LAN IP at startup so the viewer is accessible from any device on the same network
+- All viewers support a `?date=YYYYMMDD` URL parameter for direct deep-linking to a historical date
 
 ## Requirements
 
@@ -28,7 +45,7 @@ Real-time PPI (Plan Position Indicator) and VAD viewer for NSSL Doppler lidar da
 
 ```bash
 conda env create -f environment.yml
-conda activate ppi_view
+conda activate lid_viewer
 ```
 
 ## Configuration
@@ -44,6 +61,7 @@ cp ppiview.config.example.json ppiview.config.json
 | `data_dir` | Path to daily PPI lidar `.cdf` files |
 | `sfc_dir` | Path to daily surface obs `.txt` files |
 | `vad_dir` | Path to daily VAD lidar `.cdf` files |
+| `rhi_dir` | Path to daily RHI lidar `.cdf` files |
 | `http_port` | Port to serve on (default: `8050`) |
 
 Data directories can also be passed as CLI flags, which take precedence over the config file.
@@ -51,27 +69,26 @@ Data directories can also be passed as CLI flags, which take precedence over the
 ## Usage
 
 ```bash
-# Live mode — watches today's data file and updates in real time
+# Live mode — watches today's data files and updates in real time
 python ppi_view.py
 
 # Override data directories at runtime
-python ppi_view.py --data-dir /path/to/data --sfc-dir /path/to/sfc --vad-dir /path/to/vad
+python ppi_view.py --data-dir /path/to/ppi --sfc-dir /path/to/sfc \
+                   --vad-dir /path/to/vad --rhi-dir /path/to/rhi
 
-# Historical/test mode — loads the most recent PPI file in data-dir
-python ppi_view.py --test-ppi
-
-# Historical/test mode — loads the most recent VAD file in vad-dir
-python ppi_view.py --test-vad
+# Test/historical mode — loads the most recent file for each scan type
+# and opens the dashboard with all viewers pre-loaded on that date
+python ppi_view.py --test
 
 # Suppress automatic browser launch
 python ppi_view.py --no-browser
 ```
 
-The PPI viewer opens at `http://<host-ip>:8050` and the VAD viewer at `http://<host-ip>:8050/vad`.
+The dashboard opens at `http://<host-ip>:8050`. Individual viewers are at `/ppi`, `/rhi`, and `/vad`.
 
 ## Data Format
 
-**PPI lidar files** — NetCDF (`.cdf`), named `*.b1.YYYYMMDD.HHMMSS.cdf`, containing variables: `base_time`, `time_offset`, `snum`, `azimuth`, `elevation`, `range`, `velocity`, `intensity`, `backscatter`.
+**PPI / RHI lidar files** — NetCDF (`.cdf`), named `*.b1.YYYYMMDD.HHMMSS.cdf`, containing variables: `base_time`, `time_offset`, `snum`, `azimuth`, `elevation`, `range`, `velocity`, `intensity`, `backscatter`. PPI and RHI files live in separate directories; scan type is determined by the configured directory, not the filename.
 
 **VAD lidar files** — NetCDF (`.cdf`), named `*.c1.YYYYMMDD.HHMMSS.cdf`, containing variables: `base_time`, `time_offset`, `height`, `wdir`, `wspd`, `w`, `rms`, `r_sq`.
 

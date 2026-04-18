@@ -14,11 +14,10 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--data-dir', type=str, default=None)   # directory containing PPI .cdf files
 parser.add_argument('--sfc-dir',  type=str, default=None)   # directory containing surface obs .txt files
 parser.add_argument('--vad-dir',  type=str, default=None)   # directory containing VAD .cdf files
+parser.add_argument('--rhi-dir',  type=str, default=None)   # directory containing RHI .cdf files
 parser.add_argument('--no-browser', action='store_true')    # suppress auto-opening the browser
-parser.add_argument('--test-ppi', action='store_true',
-                    help='Start in historical PPI mode using the most recent file in data-dir')
-parser.add_argument('--test-vad', action='store_true',
-                    help='Start in historical VAD mode using the most recent file in vad-dir')
+parser.add_argument('--test', action='store_true',
+                    help='Load most recent historical data for all scan types; opens dashboard')
 args, _ = parser.parse_known_args()
 
 # JSON config file sits next to this script; CLI args take precedence over it
@@ -35,6 +34,7 @@ _CFG      = load_config()
 DATA_DIR  = Path(args.data_dir or _CFG.get('data_dir', str(Path(__file__).parent / 'test_data'))).expanduser()
 SFC_DIR   = Path(args.sfc_dir  or _CFG.get('sfc_dir',  str(Path(__file__).parent / 'test_data'))).expanduser()
 VAD_DIR   = Path(args.vad_dir  or _CFG.get('vad_dir',  str(Path(__file__).parent / 'test_data'))).expanduser()
+RHI_DIR   = Path(args.rhi_dir  or _CFG.get('rhi_dir',  str(Path(__file__).parent / 'test_data'))).expanduser()
 HTTP_PORT = int(_CFG.get('http_port', 8050))
 
 def _sample_phase_cmap() -> list[list[int]]:
@@ -56,13 +56,14 @@ def _detect_test_date(directory: Path, pattern: str, date_re: str) -> str | None
     m = re.search(date_re, Path(files[-1]).name)
     return m.group(1) if m else None
 
-# Only detect test dates when the corresponding test flag is set; None means "live/today" mode.
-TEST_DATE     = _detect_test_date(DATA_DIR, '*.b1.????????.*.cdf', r'\.b1\.(\d{8})\.') if args.test_ppi else None
-TEST_VAD_DATE = _detect_test_date(VAD_DIR,  '*.c1.????????.*.cdf', r'\.c1\.(\d{8})\.') if args.test_vad else None
+# Detect test dates for all scan types when --test is set; None means "live/today" mode.
+TEST_DATE     = _detect_test_date(DATA_DIR, '*.b1.????????.*.cdf', r'\.b1\.(\d{8})\.') if args.test else None
+TEST_VAD_DATE = _detect_test_date(VAD_DIR,  '*.c1.????????.*.cdf', r'\.c1\.(\d{8})\.') if args.test else None
+TEST_RHI_DATE = _detect_test_date(RHI_DIR,  '*.b1.????????.*.cdf', r'\.b1\.(\d{8})\.') if args.test else None
 
 def _log(msg):
     ts = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
-    print(f'[{ts}] [ppiview] {msg}', flush=True)
+    print(f'[{ts}] [dataviewer] {msg}', flush=True)
 
 app = Flask(__name__)
 
@@ -210,6 +211,102 @@ def load_vad(path: Path) -> dict:
             'w':          w,
             'rms':        rms,
             'r_sq':       r_sq,
+        }
+    finally:
+        ds.close()
+
+def find_rhi_file(date: datetime) -> Path | None:
+    pattern = str(RHI_DIR / f'*.b1.{date.strftime("%Y%m%d")}.*.cdf')
+    files = sorted(glob.glob(pattern))
+    return Path(files[-1]) if files else None
+
+def load_rhi_scans(path: Path) -> list[dict]:
+    """Return lightweight metadata for every RHI sweep (snum) in the file."""
+    ds = nc.Dataset(str(path))
+    try:
+        base_time   = int(ds.variables['base_time'][:])
+        time_offset = _fill_nan(ds.variables['time_offset'][:])
+        snum        = ds.variables['snum'][:].data.astype(int)
+        azimuth     = _fill_nan(ds.variables['azimuth'][:])
+        elevation   = _fill_nan(ds.variables['elevation'][:])
+        hdg_arr     = _fill_nan(ds.variables['heading'][:]) if 'heading' in ds.variables else None
+
+        scans = []
+        for s in np.unique(snum):
+            mask = snum == s
+            t    = base_time + time_offset[mask]
+            ts   = float(np.nanmean(t))
+            az   = azimuth[mask]
+            el   = elevation[mask]
+            h    = float(np.nanmean(hdg_arr[mask])) if hdg_arr is not None else 0.0
+            utc  = datetime.fromtimestamp(ts, tz=timezone.utc)
+            scans.append({
+                'snum':       int(s),
+                'timestamp':  ts,
+                'n_rays':     int(mask.sum()),
+                'azimuth':    float(round(np.nanmean(az), 1)),
+                'el_min':     float(round(np.nanmin(el), 1)),
+                'el_max':     float(round(np.nanmax(el), 1)),
+                'heading':    float(round(h, 1)),
+                'local_time': utc.strftime('%H:%M:%S'),
+                'local_label': utc.strftime('%H:%M:%S UTC'),
+            })
+        scans.sort(key=lambda x: x['timestamp'])
+        return scans
+    finally:
+        ds.close()
+
+def load_rhi_scan_data(path: Path, snum_target: int) -> dict:
+    """Load all ray/gate data for a single RHI sweep."""
+    ds = nc.Dataset(str(path))
+    try:
+        base_time   = int(ds.variables['base_time'][:])
+        time_offset = _fill_nan(ds.variables['time_offset'][:])
+        snum        = ds.variables['snum'][:].data.astype(int)
+        mask        = snum == snum_target
+        if not mask.any():
+            return {}
+
+        elevation   = _fill_nan(ds.variables['elevation'][mask])
+        azimuth_arr = _fill_nan(ds.variables['azimuth'][mask])
+        r           = _fill_nan(ds.variables['range'][:])
+        velocity    = _fill_nan(ds.variables['velocity'][mask])
+        intensity   = _fill_nan(ds.variables['intensity'][mask])
+        backscatter = _fill_nan(ds.variables['backscatter'][mask])
+        t           = base_time + time_offset[mask]
+        ts          = float(np.nanmean(t))
+        hdg_arr     = _fill_nan(ds.variables['heading'][mask]) if 'heading' in ds.variables else None
+        heading     = float(np.nanmean(hdg_arr)) if hdg_arr is not None else 0.0
+
+        # Drop rays with NaN elevation, sort ascending
+        valid       = np.isfinite(elevation)
+        elevation   = elevation[valid]
+        velocity    = velocity[valid]
+        intensity   = intensity[valid]
+        backscatter = backscatter[valid]
+        az_mean     = float(np.nanmean(azimuth_arr[valid]))
+
+        order       = np.argsort(elevation)
+        elevation   = elevation[order]
+        velocity    = velocity[order]
+        intensity   = intensity[order]
+        backscatter = backscatter[order]
+
+        utc = datetime.fromtimestamp(ts, tz=timezone.utc)
+        return {
+            'snum':        snum_target,
+            'timestamp':   ts,
+            'heading':     round(heading, 1),
+            'azimuth':     round(az_mean, 1),
+            'el_min':      round(float(np.nanmin(elevation)), 1),
+            'el_max':      round(float(np.nanmax(elevation)), 1),
+            'local_time':  utc.strftime('%H:%M:%S'),
+            'local_label': utc.strftime('%H:%M:%S UTC'),
+            'elevation':   [round(float(v), 2) for v in elevation],
+            'range_km':    [round(float(v), 4) for v in r],
+            'velocity':    _to_list2d(velocity),
+            'backscatter': _to_list2d(backscatter),
+            'intensity':   _to_list2d(intensity),
         }
     finally:
         ds.close()
@@ -475,14 +572,193 @@ def _watcher():
 # Start watcher as a daemon so it exits automatically when the main process exits
 threading.Thread(target=_watcher, daemon=True).start()
 
+# ── RHI shared state ──────────────────────────────────────────────────────────
+_rhi_scan_list        = []
+_rhi_latest_snum      = None
+_rhi_sse_cond         = threading.Condition()
+_rhi_sse_seq          = 0
+_rhi_scan_data_cache: dict[tuple, dict] = {}
+
+def _rhi_watcher():
+    global _rhi_scan_list, _rhi_latest_snum, _rhi_sse_seq
+    while True:
+        try:
+            now  = datetime.now(timezone.utc)
+            path = find_rhi_file(now)
+            if path and path.exists():
+                scans = load_rhi_scans(path)
+                if scans:
+                    newest = scans[-1]['snum']
+                    with _cache_lock:
+                        changed          = newest != _rhi_latest_snum
+                        _rhi_scan_list   = scans
+                        _rhi_latest_snum = newest
+                    if changed:
+                        with _rhi_sse_cond:
+                            _rhi_sse_seq += 1
+                            _rhi_sse_cond.notify_all()
+                        _log(f'New RHI scan detected: snum={newest}')
+        except Exception as e:
+            _log(f'RHI watcher error: {e}')
+        time.sleep(15)
+
+threading.Thread(target=_rhi_watcher, daemon=True).start()
+
 def _parse_date(date_str: str | None) -> datetime:
     if date_str:
         return datetime.strptime(date_str, '%Y%m%d').replace(tzinfo=timezone.utc)
     return datetime.now(timezone.utc)
 
 @app.route('/')
-def index():
-    return render_template('index.html', test_date=TEST_DATE)
+def dashboard():
+    return render_template('index.html')
+
+@app.route('/ppi')
+def ppi_page():
+    return render_template('ppi.html', test_date=TEST_DATE)
+
+@app.route('/rhi')
+def rhi_page():
+    return render_template('rhi.html', test_rhi_date=TEST_RHI_DATE)
+
+@app.route('/rhi/scans')
+def rhi_scans():
+    date_str = request.args.get('date')
+    date     = _parse_date(date_str)
+    path     = find_rhi_file(date)
+    if not path or not path.exists():
+        return jsonify({'scans': [], 'file': None})
+    if not date_str:
+        with _cache_lock:
+            if _rhi_scan_list:
+                return jsonify({'scans': list(_rhi_scan_list), 'file': path.name})
+    try:
+        return jsonify({'scans': load_rhi_scans(path), 'file': path.name})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/rhi/scan/<int:snum>')
+def rhi_scan(snum):
+    date_str = request.args.get('date')
+    date     = _parse_date(date_str)
+    key_date = date.strftime('%Y%m%d')
+    path     = find_rhi_file(date)
+    if not path or not path.exists():
+        return jsonify({'error': 'file not found'}), 404
+    try:
+        with _cache_lock:
+            data = _rhi_scan_data_cache.get((key_date, snum))
+        if data is None:
+            data = load_rhi_scan_data(path, snum)
+            with _cache_lock:
+                _rhi_scan_data_cache[(key_date, snum)] = data
+        if not data:
+            return jsonify({'error': 'scan not found'}), 404
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/rhi/stream')
+def rhi_stream():
+    def generate():
+        with _rhi_sse_cond:
+            last_seq = _rhi_sse_seq
+        try:
+            while True:
+                with _rhi_sse_cond:
+                    changed = _rhi_sse_cond.wait_for(lambda: _rhi_sse_seq != last_seq, timeout=20)
+                    if changed:
+                        with _cache_lock:
+                            snum = _rhi_latest_snum
+                        last_seq = _rhi_sse_seq
+                        yield f'data: {json.dumps({"snum": snum})}\n\n'
+                    else:
+                        yield ': keep-alive\n\n'
+        except GeneratorExit:
+            pass
+    return Response(generate(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+@app.route('/status')
+def status():
+    """Return data availability, timing, and platform info for today."""
+    now = datetime.now(timezone.utc)
+
+    def _scan_stats(timestamps: list[float]) -> dict:
+        """Compute latest_ts, first_ts, and per-hour scan counts from a timestamp list."""
+        if not timestamps:
+            return {}
+        hourly = [0] * 24
+        for ts in timestamps:
+            hourly[datetime.fromtimestamp(ts, tz=timezone.utc).hour] += 1
+        return {
+            'latest_ts':     max(timestamps),
+            'first_ts':      min(timestamps),
+            'hourly_counts': hourly,
+        }
+
+    def _check_ppi():
+        path = find_daily_file(now)
+        if not path or not path.exists():
+            return {'available': False}
+        try:
+            # Prefer the in-memory watcher list to avoid re-reading disk on every poll
+            with _cache_lock:
+                scans = list(_scan_list) if _scan_list else None
+            if scans is None:
+                hdg   = _get_hdg_series(now)
+                scans = load_scans(path, hdg)
+            stats = _scan_stats([s['timestamp'] for s in scans])
+            return {'available': True, 'scans': len(scans), **stats}
+        except Exception:
+            return {'available': False, 'error': True}
+
+    def _check_vad():
+        path = find_vad_file(now)
+        if not path or not path.exists():
+            return {'available': False}
+        try:
+            data       = load_vad(path)
+            timestamps = [t for t in (data.get('timestamps') or []) if t is not None]
+            stats      = _scan_stats(timestamps)
+            return {'available': True, 'scans': len(timestamps), **stats}
+        except Exception:
+            return {'available': False, 'error': True}
+
+    def _check_rhi():
+        path = find_rhi_file(now)
+        if not path or not path.exists():
+            return {'available': False}
+        try:
+            with _cache_lock:
+                scans = list(_rhi_scan_list) if _rhi_scan_list else None
+            if scans is None:
+                scans = load_rhi_scans(path)
+            stats = _scan_stats([s['timestamp'] for s in scans])
+            return {'available': True, 'scans': len(scans), **stats}
+        except Exception:
+            return {'available': False, 'error': True}
+
+    def _platform():
+        try:
+            series = _get_hdg_series(now)
+            sample = _surface_sample_at(series, now.timestamp())
+            if sample and math.isfinite(sample['lat']) and math.isfinite(sample['lon']):
+                return {
+                    'lat':     round(float(sample['lat']), 5),
+                    'lon':     round(float(sample['lon']), 5),
+                    'heading': round(float(sample['heading']), 1),
+                }
+        except Exception:
+            pass
+        return None
+
+    return jsonify({
+        'ppi':      _check_ppi(),
+        'vad':      _check_vad(),
+        'rhi':      _check_rhi(),
+        'platform': _platform(),
+    })
 
 @app.route('/scans')
 def scans():
@@ -612,22 +888,19 @@ if __name__ == '__main__':
     _log(f'Data directory : {DATA_DIR}')
     _log(f'Surface obs dir: {SFC_DIR}')
 
-    # Precompute circulation for the startup date (blocking, PPI mode only)
-    if not args.test_vad:
-        startup_date = TEST_DATE or datetime.now(timezone.utc).strftime('%Y%m%d')
-        startup_path = find_daily_file(
-            datetime.strptime(startup_date, '%Y%m%d').replace(tzinfo=timezone.utc)
-        )
-        if startup_path and startup_path.exists():
-            _precompute_date(startup_date, startup_path, show_progress=True)
-        else:
-            _log('No data file found for startup date — skipping precomputation')
+    # Precompute circulation for the PPI startup date (blocking)
+    startup_date = TEST_DATE or datetime.now(timezone.utc).strftime('%Y%m%d')
+    startup_path = find_daily_file(
+        datetime.strptime(startup_date, '%Y%m%d').replace(tzinfo=timezone.utc)
+    )
+    if startup_path and startup_path.exists():
+        _precompute_date(startup_date, startup_path, show_progress=True)
+    else:
+        _log('No PPI data file found for startup date — skipping precomputation')
 
     ip  = get_local_ip()
     url = f'http://{ip}:{HTTP_PORT}'
-    if args.test_vad:
-        url += '/vad'
-    _log(f'Starting PPI Viewer — {url}')
+    _log(f'Starting Lidar Data Viewer — {url}')
     if not args.no_browser:
         try:
             webbrowser.open(url, new=2)

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>NSSL Lidar VAD Viewer</title>
+  <title>Lidar VAD Viewer</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -293,7 +293,8 @@
 <body>
 
 <header>
-  <h1>NSSL Lidar VAD Viewer</h1>
+  <a href="/" style="color:var(--subtext);text-decoration:none;font-size:0.72rem;letter-spacing:0.06em;" title="Back to dashboard">&#8592; Dashboard</a>
+  <h1>VAD Viewer</h1>
   <div id="status-bar">
     <span id="conn-dot"></span>
     <span id="status-msg">No data</span>
@@ -1220,10 +1221,11 @@ ro.observe(document.getElementById('wdir-card'));
   // Colorbars need layout to be done first
   requestAnimationFrame(redrawColorbars);
 
-  // Determine initial date
+  // Determine initial date: URL ?date= param > TEST_VAD_DATE > today
+  const _urlDate = new URLSearchParams(window.location.search).get('date');
   let initDate;
-  if (TEST_VAD_DATE) {
-    initDate = TEST_VAD_DATE;
+  if (_urlDate || TEST_VAD_DATE) {
+    initDate = _urlDate || TEST_VAD_DATE;
     const y = initDate.slice(0, 4), mo = initDate.slice(4, 6), dd = initDate.slice(6, 8);
     dateInput.value = `${y}-${mo}-${dd}`;
   } else {

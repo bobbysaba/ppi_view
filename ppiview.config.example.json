@@ -1,6 +1,7 @@
 {
-  "data_dir": "/path/to/daily/lidar/cdf/files",
+  "data_dir": "/path/to/daily/ppi/cdf/files",
   "sfc_dir":  "/path/to/daily/surface/obs/txt/files",
   "vad_dir":  "/path/to/daily/vad/cdf/files",
+  "rhi_dir":  "/path/to/daily/rhi/cdf/files",
   "http_port": 8050
 }

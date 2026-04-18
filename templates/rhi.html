@@ -1,0 +1,1375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lidar RHI Viewer</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ── Catppuccin Mocha palette ──────────────────────────────────────────── */
+    :root {
+      --bg:      #1e1e2e;
+      --surface: #181825;
+      --border:  #313244;
+      --muted:   #45475a;
+      --text:    #cdd6f4;
+      --subtext: #a6adc8;
+      --blue:    #89b4fa;
+      --green:   #a6e3a1;
+      --red:     #f38ba8;
+      --orange:  #fab387;
+      --purple:  #cba6f7;
+      --teal:    #94e2d5;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-monospace, 'Cascadia Code', monospace;
+      font-size: 13px;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Header ────────────────────────────────────────────────────────────── */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 7px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+      gap: 8px;
+    }
+
+    h1 {
+      font-size: 0.82rem;
+      color: #cfe2ff;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    #status-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.72rem;
+      color: var(--subtext);
+      flex-wrap: wrap;
+    }
+
+    #conn-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      transition: background 0.3s;
+      flex-shrink: 0;
+    }
+    #conn-dot.stale { background: var(--orange); }
+    #conn-dot.off   { background: var(--red); }
+    #last-update.stale { color: var(--orange); }
+
+    /* ── Shared button style ───────────────────────────────────────────────── */
+    .btn {
+      background: var(--muted);
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 3px 9px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 0.72rem;
+      transition: border-color 0.15s, color 0.15s;
+      white-space: nowrap;
+    }
+    .btn:hover:not(:disabled) { border-color: var(--subtext); }
+    .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+    #live-btn       { border-color: var(--green); color: var(--green); }
+    #live-btn.off   { border-color: var(--border); color: var(--subtext); }
+
+    #date-input {
+      background: var(--muted);
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 3px 6px;
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 0.72rem;
+      color-scheme: dark;
+    }
+    #date-input:disabled { opacity: 0.35; }
+
+    /* ── Controls bar ──────────────────────────────────────────────────────── */
+    #controls {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 5px 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    #playback { display: flex; gap: 3px; flex-shrink: 0; }
+
+    .pb-btn {
+      background: var(--muted);
+      color: var(--text);
+      border: 1px solid var(--border);
+      width: 30px; height: 26px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      display: flex; align-items: center; justify-content: center;
+      transition: border-color 0.15s, color 0.15s;
+      user-select: none;
+    }
+    .pb-btn:hover:not(:disabled) { border-color: var(--subtext); }
+    .pb-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    #btn-play { min-width: 34px; }
+    #btn-play.playing { border-color: var(--blue); color: var(--blue); }
+
+    #scrubber-wrap {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      min-width: 0;
+    }
+
+    #scrubber {
+      width: 100%;
+      accent-color: var(--blue);
+      cursor: pointer;
+      height: 16px;
+    }
+
+    #scrub-label {
+      font-size: 0.62rem;
+      color: var(--subtext);
+      text-align: center;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* ── Main grid ─────────────────────────────────────────────────────────── */
+    main {
+      flex: 1;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 1fr 1fr 178px;
+      gap: 9px;
+      padding: 9px;
+      overflow: hidden;
+    }
+
+    /* ── RHI panel cards ───────────────────────────────────────────────────── */
+    .rhi-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-height: 0;
+    }
+
+    .panel-hdr {
+      padding: 5px 8px 4px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      flex-shrink: 0;
+    }
+
+    .tabs { display: flex; gap: 3px; }
+
+    .tab {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--subtext);
+      padding: 1px 9px;
+      border-radius: 3px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 0.68rem;
+      transition: border-color 0.12s, color 0.12s;
+    }
+    .tab:hover  { border-color: var(--subtext); color: var(--text); }
+    .tab.active { border-color: var(--blue); color: var(--blue); }
+
+    .cb-canvas {
+      display: block;
+      width: 100%;
+      height: 12px;
+      border-radius: 2px;
+    }
+
+    .cb-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.58rem;
+      color: var(--subtext);
+    }
+
+    .rhi-wrap {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      background: var(--bg);
+      touch-action: none;
+    }
+
+    .rhi-wrap canvas { cursor: crosshair; }
+
+    /* ── Sidebar ───────────────────────────────────────────────────────────── */
+    #sidebar {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      overflow-y: auto;
+      min-height: 0;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 7px 10px;
+      flex-shrink: 0;
+    }
+
+    .card-title {
+      font-size: 0.60rem;
+      color: var(--subtext);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      margin-bottom: 5px;
+    }
+
+    .cv-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      padding: 2px 0;
+      font-size: 0.68rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .cv-row:last-child { border-bottom: none; }
+    .cv-label { color: var(--subtext); }
+    .cv-val   { font-weight: 600; }
+
+    .tog-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.68rem;
+      padding: 2px 0;
+      cursor: pointer;
+      color: var(--subtext);
+      user-select: none;
+    }
+    .tog-row:hover { color: var(--text); }
+    .tog-row input { accent-color: var(--blue); cursor: pointer; }
+  </style>
+</head>
+<body>
+
+<header>
+  <a href="/" style="color:var(--subtext);text-decoration:none;font-size:0.72rem;letter-spacing:0.06em;" title="Back to dashboard">&#8592; Dashboard</a>
+  <h1>RHI Viewer</h1>
+  <div id="status-bar">
+    <span id="conn-dot"></span>
+    <span id="last-update">--:--:-- UTC</span>
+    <button id="live-btn" class="btn">Live</button>
+    <input type="date" id="date-input" disabled>
+  </div>
+</header>
+
+<div id="controls">
+  <div id="playback">
+    <button class="pb-btn" id="btn-first" title="First scan" disabled>⏮</button>
+    <button class="pb-btn" id="btn-rew"   title="Previous scan" disabled>⏪</button>
+    <button class="pb-btn" id="btn-play"  title="Play / Pause" disabled>▶</button>
+    <button class="pb-btn" id="btn-ff"    title="Next scan" disabled>⏩</button>
+    <button class="pb-btn" id="btn-last"  title="Last scan" disabled>⏭</button>
+  </div>
+  <div id="scrubber-wrap">
+    <input type="range" id="scrubber" min="0" max="0" value="0" step="1" disabled>
+    <div id="scrub-label">-- UTC  (0 / 0)</div>
+  </div>
+  <div style="display:flex; gap:8px; align-items:center; margin-left:8px;">
+    <button id="btn-save-both" class="btn" title="Save both panels as one PNG" disabled>Save Both PNG</button>
+  </div>
+</div>
+
+<main>
+
+  <!-- Left panel -->
+  <div class="rhi-card" id="left-card">
+    <div class="panel-hdr">
+      <div class="tabs" data-side="left">
+        <button class="tab active" data-field="velocity">Velocity</button>
+        <button class="tab"        data-field="backscatter">Backscatter</button>
+        <button class="tab"        data-field="intensity">Intensity</button>
+      </div>
+      <canvas class="cb-canvas" id="left-cb"></canvas>
+      <div class="cb-labels" id="left-cb-labels">
+        <span></span><span></span><span></span>
+      </div>
+    </div>
+    <div class="rhi-wrap" id="left-wrap">
+      <canvas id="left-canvas"></canvas>
+    </div>
+  </div>
+
+  <!-- Right panel -->
+  <div class="rhi-card" id="right-card">
+    <div class="panel-hdr">
+      <div class="tabs" data-side="right">
+        <button class="tab"        data-field="velocity">Velocity</button>
+        <button class="tab active" data-field="backscatter">Backscatter</button>
+        <button class="tab"        data-field="intensity">Intensity</button>
+      </div>
+      <canvas class="cb-canvas" id="right-cb"></canvas>
+      <div class="cb-labels" id="right-cb-labels">
+        <span></span><span></span><span></span>
+      </div>
+    </div>
+    <div class="rhi-wrap" id="right-wrap">
+      <canvas id="right-canvas"></canvas>
+    </div>
+  </div>
+
+  <!-- Sidebar -->
+  <div id="sidebar">
+    <div class="card">
+      <div class="card-title">Scan Info</div>
+      <div class="cv-row"><span class="cv-label">Scan #</span>   <span class="cv-val" id="si-snum">--</span></div>
+      <div class="cv-row"><span class="cv-label">Time UTC</span> <span class="cv-val" id="si-time">--</span></div>
+      <div class="cv-row"><span class="cv-label">Azimuth</span>  <span class="cv-val" id="si-az">--</span></div>
+      <div class="cv-row"><span class="cv-label">El Range</span> <span class="cv-val" id="si-el">--</span></div>
+      <div class="cv-row"><span class="cv-label">Heading</span>  <span class="cv-val" id="si-hdg">--</span></div>
+      <div class="cv-row"><span class="cv-label">Rays</span>     <span class="cv-val" id="si-rays">--</span></div>
+    </div>
+    <div class="card" id="cursor-card">
+      <div class="card-title">Cursor</div>
+      <div class="cv-row"><span class="cv-label">Range</span>     <span class="cv-val" id="cur-range">--</span></div>
+      <div class="cv-row"><span class="cv-label">Elevation</span> <span class="cv-val" id="cur-el">--</span></div>
+      <div class="cv-row"><span class="cv-label">Height</span>    <span class="cv-val" id="cur-ht">--</span></div>
+      <div class="cv-row"><span class="cv-label" id="cur-left-lbl">Left</span>  <span class="cv-val" id="cur-left-val">--</span></div>
+      <div class="cv-row"><span class="cv-label" id="cur-right-lbl">Right</span><span class="cv-val" id="cur-right-val">--</span></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Display</div>
+      <label class="tog-row"><input type="checkbox" id="tog-rings" checked> Range rings</label>
+      <label class="tog-row"><input type="checkbox" id="tog-hlines" checked> Height lines</label>
+      <label class="tog-row"><input type="checkbox" id="tog-ellines" checked> El angle grid</label>
+      <label class="tog-row"><input type="checkbox" id="tog-snr"> SNR filter</label>
+      <div id="snr-thresh-row" style="display:none; padding:3px 0; font-size:0.68rem; color:var(--subtext);">
+        Threshold&nbsp;
+        <input type="number" id="snr-thresh" value="1.003" step="0.001" min="1.0" max="1.1"
+               style="width:58px; background:var(--muted); color:var(--text); border:1px solid var(--border);
+                      border-radius:3px; padding:1px 4px; font-family:inherit; font-size:0.68rem;">
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<script>
+'use strict';
+const TEST_RHI_DATE = {{ test_rhi_date | tojson }};
+
+// ── Colormaps ─────────────────────────────────────────────────────────────────
+const CM = {
+  velocity: [
+    [  0,  64,   0],
+    [  0, 112,   0],
+    [  0, 160,   0],
+    [112, 224, 112],
+    [240, 242, 240],
+    [208, 160, 112],
+    [160,  96,  48],
+    [112,  48,  16],
+    [ 64,  24,   8],
+  ],
+  backscatter: [
+    [ 13,   8, 135],
+    [ 84,   2, 163],
+    [139,  10, 165],
+    [185,  50, 137],
+    [219,  92, 104],
+    [244, 136,  73],
+    [254, 188,  43],
+    [239, 248,  33],
+  ],
+  intensity: [
+    [ 30,  30,  46],  // ~1.0  noise floor (matches bg)
+    [ 32,  78, 140],  // weak
+    [ 42, 142, 175],
+    [100, 200, 180],
+    [220, 220,  80],
+    [255, 240, 150],
+    [255, 255, 255],  // strong signal
+  ],
+};
+
+// [vmin, vmax, isLogScale, unitLabel, minLabel, maxLabel]
+const FIELD_CFG = {
+  velocity:    { min: -40,  max:  40,  log: false, unit: 'm/s',       minLbl: '-40',  maxLbl: '+40'  },
+  backscatter: { min:  -7,  max:  -3,  log: true,  unit: 'km⁻¹sr⁻¹', minLbl: '1e-7', maxLbl: '1e-3' },
+  intensity:   { min:   0,  max:   1,  log: true,  unit: 'SNR',       minLbl: '1.0',  maxLbl: '10+'  },
+};
+
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+function sampleCM(stops, t) {
+  t = Math.max(0, Math.min(1, t));
+  const pos = t * (stops.length - 1);
+  const i   = Math.min(Math.floor(pos), stops.length - 2);
+  const f   = pos - i;
+  return [
+    Math.round(lerp(stops[i][0], stops[i+1][0], f)),
+    Math.round(lerp(stops[i][1], stops[i+1][1], f)),
+    Math.round(lerp(stops[i][2], stops[i+1][2], f)),
+  ];
+}
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+const RHI_ORIGIN_Y_FRAC = 0.90;  // radar sits at 90% down the canvas (CSS px)
+
+// ── Application state ─────────────────────────────────────────────────────────
+const S = {
+  scans:      [],
+  idx:        -1,
+  leftField:  'velocity',
+  rightField: 'backscatter',
+  cache:      {},
+  isPlaying:  false,
+  playTimer:  null,
+  isLive:     true,
+  viewDate:   null,
+  sse:        null,
+  elLUT:      null,   // Int16Array(1800): tenth-degree el bucket → ray index
+  rInfo:      null,   // { r0, dr, ng }
+  renderR:    null,
+  showRings:  true,
+  showHLines: true,
+  showElLines:true,
+  snrFilter:  false,
+  snrThresh:  1.003,
+  view: {
+    zoom: 1,
+    minZoom: 1,
+    maxZoom: 16,
+    panX: 0,
+    panY: 0,
+    dragActive: false,
+    dragPointerId: null,
+    dragCx: 0,
+    dragCy: 0,
+    dragR:  0,
+  },
+};
+
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+function resetViewport(shouldRender = true) {
+  S.view.zoom = 1;
+  S.view.panX = 0;
+  S.view.panY = 0;
+  if (shouldRender) renderVisible();
+}
+
+// ── Viewport math ─────────────────────────────────────────────────────────────
+// All viewport functions operate in CSS pixels (canvas.offsetWidth/offsetHeight).
+
+function rhiCssBaseScale(W, H, R) {
+  // Scale (CSS px / km) to fit the full semicircle: 2R wide, R tall.
+  const availH = H * RHI_ORIGIN_Y_FRAC;
+  return Math.min(W / (2 * R), availH / R);
+}
+
+function rhiWorldFromScreen(cssX, cssY, W, H, R) {
+  const scale = rhiCssBaseScale(W, H, R);
+  return {
+    x: S.view.panX + (cssX - W / 2)                   / (scale * S.view.zoom),
+    y: S.view.panY + (H * RHI_ORIGIN_Y_FRAC - cssY)   / (scale * S.view.zoom),
+  };
+}
+
+function rhiClampViewport() {
+  if (S.renderR === null) return;
+  const R   = S.renderR;
+  const ext = R * (1 - 1 / S.view.zoom) + R * 0.4;
+  S.view.panX = clamp(S.view.panX, -ext, ext);
+  S.view.panY = clamp(S.view.panY, -R * 0.05, R);
+}
+
+function rhiSetZoomAtPoint(nextZoom, cssX, cssY, W, H) {
+  if (S.renderR === null) return;
+  const zoom  = clamp(nextZoom, S.view.minZoom, S.view.maxZoom);
+  const world = rhiWorldFromScreen(cssX, cssY, W, H, S.renderR);
+  const scale = rhiCssBaseScale(W, H, S.renderR);
+  const ox = W / 2;
+  const oy = H * RHI_ORIGIN_Y_FRAC;
+  S.view.zoom = zoom;
+  S.view.panX = world.x - (cssX - ox) / (scale * zoom);
+  S.view.panY = world.y - (oy - cssY) / (scale * zoom);
+  rhiClampViewport();
+}
+
+function applyCircleZoom(cx_css, cy_css, r_css, W, H) {
+  if (S.renderR === null || r_css < 4) return;
+  const world = rhiWorldFromScreen(cx_css, cy_css, W, H, S.renderR);
+  const scale = rhiCssBaseScale(W, H, S.renderR);
+  const worldR = r_css / (scale * S.view.zoom);
+  const halfKm = Math.min(W, H * RHI_ORIGIN_Y_FRAC) * 0.44 / scale;
+  const newZoom = clamp(halfKm / worldR, S.view.minZoom, S.view.maxZoom);
+  S.view.zoom = newZoom;
+  S.view.panX = world.x;
+  S.view.panY = world.y;
+  rhiClampViewport();
+}
+
+// ── Elevation LUT ─────────────────────────────────────────────────────────────
+function buildElLUT(elArr) {
+  // elArr: sorted ascending, values in [0°, 180°].
+  // Returns Int16Array(1800) mapping tenth-degree el bucket → ray index, -1 = gap.
+  const lut = new Int16Array(1800).fill(-1);
+  const n   = elArr.length;
+  if (n < 2) return lut;
+  for (let j = 0; j < n; j++) {
+    const lo = j === 0
+      ? elArr[0]   - (elArr[1]   - elArr[0])   / 2
+      : (elArr[j-1] + elArr[j])   / 2;
+    const hi = j === n - 1
+      ? elArr[n-1] + (elArr[n-1] - elArr[n-2]) / 2
+      : (elArr[j]   + elArr[j+1]) / 2;
+    const k0 = Math.max(0,    Math.floor(lo * 10));
+    const k1 = Math.min(1799, Math.floor(hi * 10));
+    for (let k = k0; k <= k1; k++) lut[k] = j;
+  }
+  return lut;
+}
+
+function prepareScanCache(data) {
+  S.elLUT  = buildElLUT(data.elevation);
+  const r  = data.range_km;
+  S.rInfo  = { r0: r[0], dr: r[1] - r[0], ng: r.length };
+}
+
+// ── RHI Canvas rendering ──────────────────────────────────────────────────────
+function renderRHI(canvas, data, field) {
+  if (!canvas || !data || !S.elLUT) return;
+  const W = canvas.width, H = canvas.height;
+  if (!W || !H) return;
+
+  const ctx    = canvas.getContext('2d');
+  const dpr    = window.devicePixelRatio || 1;
+  const W_css  = W / dpr;
+  const H_css  = H / dpr;
+  const rArr   = data.range_km;
+  const R      = rArr[rArr.length - 1];
+  const scale  = rhiCssBaseScale(W_css, H_css, R) * dpr;  // canvas px / km
+
+  S.renderR = R;
+  rhiClampViewport();
+
+  const originX  = W / 2;                       // canvas px, radar horizontal center
+  const originY  = H * RHI_ORIGIN_Y_FRAC;       // canvas px, radar vertical position
+  const invScale = 1 / (scale * S.view.zoom);
+  const panX     = S.view.panX;
+  const panY     = S.view.panY;
+
+  const vals = data[field];
+  const ints = (S.snrFilter && data.intensity) ? data.intensity : null;
+  const snrT = S.snrThresh;
+  const { r0, dr, ng } = S.rInfo;
+  const lut  = S.elLUT;
+  const zoom = S.view.zoom;
+
+  // Build 1024-entry colour LUT
+  const stops = CM[field];
+  const NL    = 1024;
+  const lutR  = new Uint8Array(NL), lutG = new Uint8Array(NL), lutB = new Uint8Array(NL);
+  for (let i = 0; i < NL; i++) {
+    const [r, g, b] = sampleCM(stops, i / (NL - 1));
+    lutR[i] = r; lutG[i] = g; lutB[i] = b;
+  }
+
+  const cfg    = FIELD_CFG[field];
+  const vmin   = cfg.min, vrange = cfg.max - cfg.min, isLog = cfg.log;
+  const R2     = R * R;
+  const r02    = r0 * r0;
+  const P180   = Math.PI / 180;
+
+  const img = ctx.createImageData(W, H);
+  const px  = img.data;
+
+  // Background #1e1e2e = (30,30,46)
+  for (let k = 0; k < px.length; k += 4) {
+    px[k] = 30; px[k+1] = 30; px[k+2] = 46; px[k+3] = 255;
+  }
+
+  for (let row = 0; row < H; row++) {
+    const y_km = panY + (originY - row) * invScale;
+    if (y_km < -0.05) continue;   // below ground with small tolerance
+
+    for (let col = 0; col < W; col++) {
+      const x_km = panX + (col - originX) * invScale;
+
+      const r2 = x_km * x_km + y_km * y_km;
+      if (r2 > R2 || r2 < r02) continue;
+      if (y_km < 0) continue;   // strict below-ground mask
+
+      const r_km = Math.sqrt(r2);
+
+      // Elevation angle in [0°, 180°] (valid since y_km >= 0)
+      let el_deg = Math.atan2(y_km, x_km) / P180;
+      if (el_deg < 0) el_deg = 0;
+
+      const bucket = Math.min(1799, Math.floor(el_deg * 10));
+      const rayJ   = lut[bucket];
+      if (rayJ < 0) continue;
+
+      const gateI = Math.min(ng - 2, Math.max(0, Math.floor((r_km - r0) / dr)));
+
+      if (ints) {
+        const snr = ints[rayJ][gateI];
+        if (snr === null || snr < snrT) continue;
+      }
+
+      const v = vals[rayJ][gateI];
+      if (v === null || v === undefined) continue;
+
+      let t;
+      if (isLog) {
+        const lv = v > 0 ? Math.log10(v) : vmin - 1;
+        t = (lv - vmin) / vrange;
+      } else {
+        t = (v - vmin) / vrange;
+      }
+
+      const li = Math.max(0, Math.min(NL - 1, Math.round(t * (NL - 1))));
+      const pi = (row * W + col) * 4;
+      px[pi]   = lutR[li]; px[pi+1] = lutG[li]; px[pi+2] = lutB[li];
+    }
+  }
+
+  ctx.putImageData(img, 0, 0);
+
+  // Overlays
+  const vOriginX  = originX - panX * scale * zoom;
+  const vOriginY  = originY + panY * scale * zoom;
+  const vScale    = scale * zoom;
+
+  if (S.showRings)  drawRangeRings(ctx, vOriginX, vOriginY, vScale, R);
+  if (S.showHLines) drawHeightLines(ctx, vOriginX, vOriginY, vScale, R, W, H);
+  if (S.showElLines)drawElLines(ctx, vOriginX, vOriginY, vScale, R);
+  drawGroundLine(ctx, vOriginY, W);
+}
+
+// ── Overlays ──────────────────────────────────────────────────────────────────
+function drawRangeRings(ctx, ox, oy, scale, maxR) {
+  ctx.save();
+  ctx.strokeStyle = 'rgba(166,173,200,0.18)';
+  ctx.lineWidth   = 1;
+  ctx.setLineDash([3, 5]);
+  ctx.font        = '10px ui-monospace, monospace';
+  ctx.fillStyle   = 'rgba(166,173,200,0.55)';
+
+  const step = maxR > 8 ? 2 : 1;
+  for (let r = step; r <= maxR; r += step) {
+    const px = r * scale;
+    ctx.beginPath();
+    ctx.arc(ox, oy, px, 0, Math.PI);  // upper semicircle only
+    ctx.stroke();
+    // Label at due East (el=0°)
+    ctx.textAlign = 'left';
+    ctx.fillText(`${r} km`, ox + px + 2, oy - 2);
+  }
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+function drawHeightLines(ctx, ox, oy, scale, maxR, W, H) {
+  const heights = [0.1, 0.25, 0.5, 1, 2, 3, 4, 5].filter(h => h * scale < oy && h <= maxR);
+  ctx.save();
+  ctx.strokeStyle = 'rgba(166,173,200,0.18)';
+  ctx.lineWidth   = 1;
+  ctx.setLineDash([3, 6]);
+  ctx.font        = '9px ui-monospace, monospace';
+  ctx.fillStyle   = 'rgba(166,173,200,0.60)';
+
+  for (const h of heights) {
+    const y = oy - h * scale;
+    if (y < 0 || y > H) continue;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(W, y);
+    ctx.stroke();
+    const lbl = h >= 1 ? `${h} km AGL` : `${Math.round(h * 1000)} m AGL`;
+    ctx.textAlign = 'left';
+    ctx.fillText(lbl, 4, y - 2);
+  }
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+function drawElLines(ctx, ox, oy, scale, maxR) {
+  const angles = [30, 60, 90, 120, 150];
+  ctx.save();
+  ctx.strokeStyle = 'rgba(166,173,200,0.14)';
+  ctx.lineWidth   = 1;
+  ctx.setLineDash([2, 8]);
+  ctx.font        = '9px ui-monospace, monospace';
+  ctx.fillStyle   = 'rgba(166,173,200,0.45)';
+
+  for (const el of angles) {
+    const rad = el * Math.PI / 180;
+    const dx  = Math.cos(rad) * maxR * scale;
+    const dy  = Math.sin(rad) * maxR * scale;
+    ctx.beginPath();
+    ctx.moveTo(ox, oy);
+    ctx.lineTo(ox + dx, oy - dy);
+    ctx.stroke();
+    const lx = ox + Math.cos(rad) * maxR * scale * 0.78;
+    const ly = oy - Math.sin(rad) * maxR * scale * 0.78;
+    ctx.textAlign = el < 90 ? 'left' : el > 90 ? 'right' : 'center';
+    ctx.fillText(`${el}°`, lx + (el < 90 ? 2 : el > 90 ? -2 : 0), ly);
+  }
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+function drawGroundLine(ctx, oy, W) {
+  ctx.save();
+  ctx.strokeStyle = 'rgba(166,173,200,0.50)';
+  ctx.lineWidth   = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(0, oy);
+  ctx.lineTo(W, oy);
+  ctx.stroke();
+  ctx.restore();
+}
+
+// ── Drag-circle overlay ───────────────────────────────────────────────────────
+function drawDragOverlay() {
+  ['left-canvas', 'right-canvas'].forEach(id => {
+    const canvas = document.getElementById(id);
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const cx  = S.view.dragCx * dpr;
+    const cy  = S.view.dragCy * dpr;
+    const r   = S.view.dragR  * dpr;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(148,226,213,0.85)';  // --teal
+    ctx.lineWidth   = 1.5 * dpr;
+    ctx.setLineDash([4 * dpr, 4 * dpr]);
+    ctx.beginPath();
+    ctx.arc(cx, cy, Math.max(1, r), 0, 2 * Math.PI);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.lineWidth = 1 * dpr;
+    const arm = 6 * dpr;
+    ctx.beginPath();
+    ctx.moveTo(cx - arm, cy); ctx.lineTo(cx + arm, cy);
+    ctx.moveTo(cx, cy - arm); ctx.lineTo(cx, cy + arm);
+    ctx.stroke();
+    ctx.restore();
+  });
+}
+
+// ── Colourbar ────────────────────────────────────────────────────────────────
+function drawColorbar(canvasId, labelsId, field) {
+  const canvas = document.getElementById(canvasId);
+  const labels = document.getElementById(labelsId);
+  if (!canvas) return;
+  const W = canvas.offsetWidth || 200;
+  canvas.width = W; canvas.height = 12;
+  const ctx  = canvas.getContext('2d');
+  const grad = ctx.createLinearGradient(0, 0, W, 0);
+  CM[field].forEach((s, i) => {
+    grad.addColorStop(i / (CM[field].length - 1), `rgb(${s[0]},${s[1]},${s[2]})`);
+  });
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, 12);
+  const cfg = FIELD_CFG[field];
+  const [lo, mid, hi] = labels.children;
+  lo.textContent  = cfg.minLbl;
+  mid.textContent = cfg.unit;
+  hi.textContent  = cfg.maxLbl;
+}
+
+// ── Cursor readout ────────────────────────────────────────────────────────────
+function formatVal(field, v) {
+  if (v === null || v === undefined) return '--';
+  if (field === 'velocity')    return `${v.toFixed(2)} m/s`;
+  if (field === 'backscatter') return v.toExponential(2) + ' km⁻¹sr⁻¹';
+  if (field === 'intensity')   return v.toFixed(4);
+  return String(v);
+}
+
+function updateCursorLabels() {
+  const fn = f => f.charAt(0).toUpperCase() + f.slice(1);
+  document.getElementById('cur-left-lbl').textContent  = fn(S.leftField);
+  document.getElementById('cur-right-lbl').textContent = fn(S.rightField);
+}
+
+function clearCursor() {
+  ['cur-range','cur-el','cur-ht','cur-left-val','cur-right-val'].forEach(id => {
+    document.getElementById(id).textContent = '--';
+  });
+}
+
+function handleCursorMove(e) {
+  if (!S.elLUT || S.idx < 0 || S.renderR === null) return;
+
+  const canvas = e.currentTarget;
+  const W_css  = canvas.offsetWidth;
+  const H_css  = canvas.offsetHeight;
+  const { x: x_km, y: y_km } = rhiWorldFromScreen(e.offsetX, e.offsetY, W_css, H_css, S.renderR);
+
+  if (y_km < 0) { clearCursor(); return; }
+
+  const r_km = Math.sqrt(x_km * x_km + y_km * y_km);
+  if (r_km > S.renderR || r_km < S.rInfo.r0) { clearCursor(); return; }
+
+  let el_deg = Math.atan2(y_km, x_km) * 180 / Math.PI;
+  if (el_deg < 0) el_deg = 0;
+
+  const bucket = Math.min(1799, Math.floor(el_deg * 10));
+  const rayJ   = S.elLUT[bucket];
+  if (rayJ < 0) { clearCursor(); return; }
+
+  const { r0, dr, ng } = S.rInfo;
+  const gateI = Math.min(ng - 2, Math.max(0, Math.floor((r_km - r0) / dr)));
+
+  const data = S.cache[S.scans[S.idx].snum];
+  if (!data) return;
+
+  document.getElementById('cur-range').textContent     = `${r_km.toFixed(2)} km`;
+  document.getElementById('cur-el').textContent        = `${el_deg.toFixed(1)}°`;
+  document.getElementById('cur-ht').textContent        = `${y_km.toFixed(3)} km`;
+  document.getElementById('cur-left-val').textContent  = formatVal(S.leftField,  data[S.leftField][rayJ][gateI]);
+  document.getElementById('cur-right-val').textContent = formatVal(S.rightField, data[S.rightField][rayJ][gateI]);
+}
+
+// ── Data loading ──────────────────────────────────────────────────────────────
+async function fetchScans() {
+  const qs   = S.viewDate ? `?date=${S.viewDate}` : '';
+  const resp = await fetch(`/rhi/scans${qs}`);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  const body = await resp.json();
+  S.scans = body.scans || [];
+}
+
+async function fetchScanData(snum) {
+  if (S.cache[snum]) return S.cache[snum];
+  const qs   = S.viewDate ? `?date=${S.viewDate}` : '';
+  const resp = await fetch(`/rhi/scan/${snum}${qs}`);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  const data = await resp.json();
+  S.cache[snum] = data;
+  return data;
+}
+
+function currentScanData() {
+  if (S.idx < 0 || S.idx >= S.scans.length) return null;
+  return S.cache[S.scans[S.idx].snum] || null;
+}
+
+function renderLoadedData(data) {
+  if (!data || S.idx < 0 || S.idx >= S.scans.length) return;
+  prepareScanCache(data);
+
+  const lc = document.getElementById('left-canvas');
+  const rc = document.getElementById('right-canvas');
+  resizeCanvasToWrap(lc, 'left-wrap');
+  resizeCanvasToWrap(rc, 'right-wrap');
+
+  renderRHI(lc, data, S.leftField);
+  renderRHI(rc, data, S.rightField);
+  drawColorbar('left-cb',  'left-cb-labels',  S.leftField);
+  drawColorbar('right-cb', 'right-cb-labels', S.rightField);
+  updateScanInfo(S.scans[S.idx], data);
+  updateLastUpdate(data.timestamp);
+}
+
+function renderVisible() {
+  const data = currentScanData();
+  if (data) renderLoadedData(data);
+}
+
+async function renderCurrent() {
+  if (S.idx < 0 || S.idx >= S.scans.length) return;
+  const snum = S.scans[S.idx].snum;
+  let data;
+  try {
+    data = await fetchScanData(snum);
+  } catch (e) {
+    console.error('fetchScanData error', e);
+    return;
+  }
+  renderLoadedData(data);
+}
+
+function resizeCanvasToWrap(canvas, wrapId) {
+  const wrap = document.getElementById(wrapId);
+  if (!wrap) return;
+  const dpr  = window.devicePixelRatio || 1;
+  // RHI panels are wider than tall — use the full wrap dimensions
+  const w = wrap.clientWidth  - 2;
+  const h = wrap.clientHeight - 2;
+  if (w > 0 && h > 0) {
+    canvas.width        = Math.round(w * dpr);
+    canvas.height       = Math.round(h * dpr);
+    canvas.style.width  = `${w}px`;
+    canvas.style.height = `${h}px`;
+  }
+}
+
+// ── Scan navigation ───────────────────────────────────────────────────────────
+function setIdx(i) {
+  S.idx = Math.max(0, Math.min(S.scans.length - 1, i));
+  updateScrubber();
+  renderCurrent();
+}
+
+function goFirst()  { pause(); setIdx(0); }
+function goLast()   { pause(); setIdx(S.scans.length - 1); }
+function stepBack() { pause(); setIdx(S.idx - 1); }
+function stepFwd()  { pause(); setIdx(S.idx + 1); }
+
+function play() {
+  if (S.isPlaying || S.scans.length === 0) return;
+  S.isPlaying = true;
+  document.getElementById('btn-play').textContent = '⏸';
+  document.getElementById('btn-play').classList.add('playing');
+  S.playTimer = setInterval(() => {
+    if (S.idx < S.scans.length - 1) {
+      S.idx++;
+      updateScrubber();
+      renderCurrent();
+    } else { pause(); }
+  }, 800);
+}
+
+function pause() {
+  if (!S.isPlaying) return;
+  S.isPlaying = false;
+  clearInterval(S.playTimer);
+  S.playTimer = null;
+  document.getElementById('btn-play').textContent = '▶';
+  document.getElementById('btn-play').classList.remove('playing');
+}
+
+function togglePlay() { S.isPlaying ? pause() : play(); }
+
+// ── UI updates ────────────────────────────────────────────────────────────────
+function updateScrubber() {
+  const el  = document.getElementById('scrubber');
+  const lbl = document.getElementById('scrub-label');
+  const n   = S.scans.length;
+  el.max    = Math.max(0, n - 1);
+  el.value  = S.idx;
+  if (n === 0 || S.idx < 0) { lbl.textContent = '-- UTC  (0 / 0)'; return; }
+  const scan = S.scans[S.idx];
+  const dt   = new Date(scan.timestamp * 1000);
+  const utc  = dt.toISOString().slice(11, 19);
+  const local = scan.local_label || scan.local_time || '--';
+  lbl.textContent = `${local} / ${utc} UTC  (${S.idx + 1} / ${n})`;
+}
+
+function updateScanInfo(meta, data) {
+  if (!meta) return;
+  document.getElementById('si-snum').textContent = meta.snum;
+  const dt = new Date(meta.timestamp * 1000);
+  document.getElementById('si-time').textContent = dt.toISOString().slice(11, 19);
+  document.getElementById('si-az').textContent   = `${meta.azimuth}°`;
+  document.getElementById('si-el').textContent   = `${meta.el_min}° – ${meta.el_max}°`;
+  document.getElementById('si-hdg').textContent  = `${meta.heading}°`;
+  document.getElementById('si-rays').textContent = meta.n_rays;
+}
+
+function updateLastUpdate(ts) {
+  const dt  = new Date(ts * 1000);
+  const hms = dt.toISOString().slice(11, 19);
+  const el  = document.getElementById('last-update');
+  el.textContent = `${hms} UTC`;
+  el.classList.remove('stale');
+}
+
+function setConnState(state) {
+  const dot = document.getElementById('conn-dot');
+  dot.className = state === 'live' ? '' : state;
+}
+
+function enableControls(on) {
+  ['btn-first','btn-rew','btn-play','btn-ff','btn-last','scrubber','btn-save-both'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !on;
+  });
+}
+
+// ── SSE / realtime ────────────────────────────────────────────────────────────
+function connectSSE() {
+  if (S.sse) { S.sse.close(); S.sse = null; }
+  S.sse = new EventSource('/rhi/stream');
+  S.sse.onopen = () => setConnState('live');
+  S.sse.onmessage = async e => {
+    setConnState('live');
+    if (!S.isLive) return;
+    try {
+      await fetchScans();
+      updateScrubber();
+      enableControls(S.scans.length > 0);
+      if (!S.isPlaying) {
+        S.idx = S.scans.length - 1;
+        updateScrubber();
+        renderCurrent();
+      }
+    } catch (err) { console.error('SSE update error', err); }
+  };
+  S.sse.onerror = () => setConnState('off');
+}
+
+// ── Date / Live toggle ────────────────────────────────────────────────────────
+async function toggleLive(wantLive) {
+  S.isLive = wantLive;
+  const btn   = document.getElementById('live-btn');
+  const dateI = document.getElementById('date-input');
+  if (wantLive) {
+    btn.classList.remove('off');
+    dateI.disabled = true;
+    S.viewDate = null;
+    S.cache    = {};
+    pause();
+    try {
+      await fetchScans();
+      enableControls(S.scans.length > 0);
+      updateScrubber();
+      S.idx = S.scans.length - 1;
+      updateScrubber();
+      renderCurrent();
+    } catch(e) { console.error(e); }
+    connectSSE();
+  } else {
+    btn.classList.add('off');
+    dateI.disabled = false;
+    if (S.sse) { S.sse.close(); S.sse = null; }
+    setConnState('off');
+  }
+}
+
+async function handleDateChange() {
+  const val = document.getElementById('date-input').value;
+  if (!val) return;
+  const dateStr = val.replace(/-/g, '');
+  pause();
+  S.viewDate = dateStr;
+  S.cache    = {};
+  try {
+    await fetchScans();
+    enableControls(S.scans.length > 0);
+    S.idx = S.scans.length > 0 ? 0 : -1;
+    updateScrubber();
+    if (S.idx >= 0) renderCurrent();
+  } catch(e) { console.error(e); }
+}
+
+// ── Field tab switching ───────────────────────────────────────────────────────
+function switchField(side, field) {
+  if (side === 'left')  S.leftField  = field;
+  else                  S.rightField = field;
+
+  document.querySelectorAll(`.tabs[data-side="${side}"] .tab`).forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.field === field);
+  });
+  updateCursorLabels();
+
+  const cid    = `${side}-canvas`;
+  const cbid   = `${side}-cb`;
+  const lblid  = `${side}-cb-labels`;
+  const canvas = document.getElementById(cid);
+  if (S.idx < 0 || S.idx >= S.scans.length) return;
+  const data = S.cache[S.scans[S.idx].snum];
+  if (!data) return;
+  renderRHI(canvas, data, field);
+  drawColorbar(cbid, lblid, field);
+}
+
+// ── Pointer / wheel interaction ───────────────────────────────────────────────
+function handleViewportWheel(e) {
+  if (S.renderR === null) return;
+  e.preventDefault();
+  const canvas = e.currentTarget;
+  const W = canvas.offsetWidth;
+  const H = canvas.offsetHeight;
+  const sensitivity = e.ctrlKey ? 0.008 : 0.0025;
+  const zoomFactor  = Math.exp(-e.deltaY * sensitivity);
+  rhiSetZoomAtPoint(S.view.zoom * zoomFactor, e.offsetX, e.offsetY, W, H);
+  renderVisible();
+}
+
+function handlePointerDown(e) {
+  if (e.button !== 0 || S.renderR === null) return;
+  const canvas = e.currentTarget;
+  S.view.dragActive    = true;
+  S.view.dragPointerId = e.pointerId;
+  S.view.dragCx = e.offsetX;
+  S.view.dragCy = e.offsetY;
+  S.view.dragR  = 0;
+  canvas.classList.add('dragging');
+  canvas.setPointerCapture(e.pointerId);
+}
+
+function handlePointerMove(e) {
+  handleCursorMove(e);
+  if (!S.view.dragActive || S.view.dragPointerId !== e.pointerId || S.renderR === null) return;
+  const dx = e.offsetX - S.view.dragCx;
+  const dy = e.offsetY - S.view.dragCy;
+  S.view.dragR = Math.sqrt(dx * dx + dy * dy);
+  renderVisible();
+  drawDragOverlay();
+}
+
+function endPointerDrag(e) {
+  if (!S.view.dragActive || S.view.dragPointerId !== e.pointerId) return;
+  e.currentTarget.classList.remove('dragging');
+  S.view.dragActive    = false;
+  S.view.dragPointerId = null;
+  if (S.view.dragR > 4) {
+    const canvas = e.currentTarget;
+    applyCircleZoom(S.view.dragCx, S.view.dragCy, S.view.dragR,
+                    canvas.offsetWidth, canvas.offsetHeight);
+  }
+  renderVisible();
+}
+
+function handleViewportDoubleClick() { resetViewport(true); }
+
+// ── Resize handling ───────────────────────────────────────────────────────────
+const resizeObs = new ResizeObserver(() => {
+  if (S.idx >= 0 && S.idx < S.scans.length) renderVisible();
+  drawColorbar('left-cb',  'left-cb-labels',  S.leftField);
+  drawColorbar('right-cb', 'right-cb-labels', S.rightField);
+});
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+async function init() {
+  drawColorbar('left-cb',  'left-cb-labels',  S.leftField);
+  drawColorbar('right-cb', 'right-cb-labels', S.rightField);
+
+  const today = new Date().toISOString().slice(0, 10);
+  document.getElementById('date-input').value = today;
+
+  document.querySelectorAll('.tabs .tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      switchField(btn.closest('.tabs').dataset.side, btn.dataset.field);
+    });
+  });
+
+  document.getElementById('btn-first').addEventListener('click', goFirst);
+  document.getElementById('btn-rew').addEventListener('click',   stepBack);
+  document.getElementById('btn-play').addEventListener('click',  togglePlay);
+  document.getElementById('btn-ff').addEventListener('click',    stepFwd);
+  document.getElementById('btn-last').addEventListener('click',  goLast);
+
+  let holdTimer = null;
+  function startHold(dir) {
+    holdTimer = setInterval(() => dir > 0 ? setIdx(S.idx + 1) : setIdx(S.idx - 1), 200);
+  }
+  function stopHold() { clearInterval(holdTimer); holdTimer = null; }
+  document.getElementById('btn-rew').addEventListener('mousedown', () => startHold(-1));
+  document.getElementById('btn-ff').addEventListener('mousedown',  () => startHold( 1));
+  ['mouseup','mouseleave'].forEach(ev => {
+    document.getElementById('btn-rew').addEventListener(ev, stopHold);
+    document.getElementById('btn-ff').addEventListener(ev,  stopHold);
+  });
+
+  document.getElementById('scrubber').addEventListener('input', e => {
+    pause();
+    S.idx = +e.target.value;
+    updateScrubber();
+    renderCurrent();
+  });
+
+  document.getElementById('live-btn').addEventListener('click', () => toggleLive(!S.isLive));
+  document.getElementById('date-input').addEventListener('change', handleDateChange);
+
+  document.getElementById('tog-rings').addEventListener('change', e => {
+    S.showRings = e.target.checked; renderVisible();
+  });
+  document.getElementById('tog-hlines').addEventListener('change', e => {
+    S.showHLines = e.target.checked; renderVisible();
+  });
+  document.getElementById('tog-ellines').addEventListener('change', e => {
+    S.showElLines = e.target.checked; renderVisible();
+  });
+  document.getElementById('tog-snr').addEventListener('change', e => {
+    S.snrFilter = e.target.checked;
+    document.getElementById('snr-thresh-row').style.display = e.target.checked ? 'block' : 'none';
+    renderVisible();
+  });
+  document.getElementById('snr-thresh').addEventListener('change', e => {
+    S.snrThresh = parseFloat(e.target.value) || 1.003;
+    if (S.snrFilter) renderVisible();
+  });
+
+  ['left-canvas', 'right-canvas'].forEach(id => {
+    const c = document.getElementById(id);
+    c.addEventListener('pointermove',        handlePointerMove);
+    c.addEventListener('pointerdown',        handlePointerDown);
+    c.addEventListener('pointerup',          endPointerDrag);
+    c.addEventListener('pointercancel',      endPointerDrag);
+    c.addEventListener('lostpointercapture', endPointerDrag);
+    c.addEventListener('wheel',              handleViewportWheel, { passive: false });
+    c.addEventListener('dblclick',           handleViewportDoubleClick);
+    c.addEventListener('mouseleave',         clearCursor);
+  });
+
+  updateCursorLabels();
+  resizeObs.observe(document.getElementById('left-wrap'));
+  resizeObs.observe(document.getElementById('right-wrap'));
+
+  const urlDate   = new URLSearchParams(window.location.search).get('date');
+  const startDate = urlDate || TEST_RHI_DATE || null;
+  if (startDate) {
+    const iso = `${startDate.slice(0,4)}-${startDate.slice(4,6)}-${startDate.slice(6,8)}`;
+    document.getElementById('date-input').value = iso;
+    S.viewDate = startDate;
+    await toggleLive(false);
+    await handleDateChange();
+  } else {
+    await toggleLive(true);
+  }
+}
+
+document.addEventListener('DOMContentLoaded', init);
+
+// ── Save Both PNG ─────────────────────────────────────────────────────────────
+function _cap(s) { return s && s.charAt(0).toUpperCase() + s.slice(1); }
+
+function downloadCanvasAsPNG(canvas, filename) {
+  try {
+    const url = canvas.toDataURL('image/png');
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+  } catch (e) { console.error('Failed to download PNG:', e); alert('Unable to export PNG.'); }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('btn-save-both').addEventListener('click', async () => {
+    if (S.idx < 0 || S.idx >= S.scans.length) { alert('No scan selected'); return; }
+    await renderCurrent();
+
+    const lc  = document.getElementById('left-canvas');
+    const rc  = document.getElementById('right-canvas');
+    const lcb = document.getElementById('left-cb');
+    const rcb = document.getElementById('right-cb');
+    if (!lc || !rc) { alert('Canvas missing'); return; }
+
+    const dpr     = window.devicePixelRatio || 1;
+    const gap     = Math.round(20 * dpr);
+    const titleH  = Math.round(56 * dpr);
+    const cbH     = Math.round(14 * dpr);
+    const labelH  = Math.round(20 * dpr);
+    const cbGap   = Math.round(12 * dpr);
+    const metaH   = Math.round(20 * dpr);
+    const canvH   = Math.max(lc.height, rc.height);
+    const width   = lc.width + gap + rc.width;
+    const height  = titleH + cbH + labelH + cbGap + canvH + metaH + Math.round(12 * dpr);
+
+    const out = document.createElement('canvas');
+    out.width = width; out.height = height;
+    const ctx = out.getContext('2d');
+    ctx.fillStyle = '#1e1e2e'; ctx.fillRect(0, 0, width, height);
+
+    const leftX  = 0;
+    const rightX = lc.width + gap;
+    const cbY    = titleH;
+
+    const meta  = S.scans[S.idx] || {};
+    const title = `RHI Viewer — ${_cap(S.leftField)} | ${_cap(S.rightField)}`;
+    let utcTxt  = '', localTxt = '';
+    if (meta.timestamp) {
+      const dt = new Date(meta.timestamp * 1000);
+      utcTxt   = dt.toISOString().slice(0,19).replace('T',' ') + ' UTC';
+      localTxt = dt.toLocaleString();
+    }
+
+    ctx.fillStyle = '#cfe2ff'; ctx.font = `${16*dpr}px ui-monospace, monospace`; ctx.textAlign = 'center';
+    ctx.fillText(title, width / 2, Math.round(18 * dpr));
+    ctx.fillStyle = '#cdd6f4'; ctx.font = `${12*dpr}px ui-monospace, monospace`;
+    ctx.fillText(`${localTxt} / ${utcTxt}`, width / 2, Math.round(34 * dpr));
+
+    if (lcb) ctx.drawImage(lcb, leftX,  cbY, lc.width, cbH);
+    if (rcb) ctx.drawImage(rcb, rightX, cbY, rc.width, cbH);
+
+    function drawCBLabels(x, w, field, y) {
+      const cfg = FIELD_CFG[field] || {};
+      const labY = y + cbH + Math.round(12 * dpr);
+      ctx.fillStyle = '#a6adc8'; ctx.font = `${11*dpr}px ui-monospace, monospace`;
+      ctx.textAlign = 'left';   ctx.fillText(cfg.minLbl || '', x + 2*dpr, labY);
+      ctx.textAlign = 'center'; ctx.fillText(cfg.unit   || '', x + w/2,   labY);
+      ctx.textAlign = 'right';  ctx.fillText(cfg.maxLbl || '', x + w - 2*dpr, labY);
+      ctx.strokeStyle = '#cdd6f4'; ctx.lineWidth = Math.max(1, Math.round(dpr));
+      const tickY = y + cbH;
+      const tickH = Math.round(6 * dpr);
+      ctx.beginPath();
+      ctx.moveTo(x + 4*dpr, tickY);   ctx.lineTo(x + 4*dpr, tickY + tickH);
+      ctx.moveTo(x + w/2,   tickY);   ctx.lineTo(x + w/2,   tickY + tickH);
+      ctx.moveTo(x + w - 4*dpr, tickY); ctx.lineTo(x + w - 4*dpr, tickY + tickH);
+      ctx.stroke();
+    }
+
+    drawCBLabels(leftX,  lc.width, S.leftField,  cbY);
+    drawCBLabels(rightX, rc.width, S.rightField, cbY);
+
+    ctx.fillStyle = '#cdd6f4'; ctx.font = `${13*dpr}px ui-monospace, monospace`; ctx.textAlign = 'center';
+    ctx.fillText(`${_cap(S.leftField)} (${FIELD_CFG[S.leftField].unit})`,  leftX  + lc.width/2, cbY - Math.round(8*dpr));
+    ctx.fillText(`${_cap(S.rightField)} (${FIELD_CFG[S.rightField].unit})`, rightX + rc.width/2, cbY - Math.round(8*dpr));
+
+    const canvY = cbY + cbH + labelH + cbGap;
+    ctx.drawImage(lc, leftX,  canvY, lc.width, canvH);
+    ctx.drawImage(rc, rightX, canvY, rc.width, canvH);
+
+    ctx.strokeStyle = '#313244'; ctx.lineWidth = Math.max(1, Math.round(dpr));
+    ctx.strokeRect(leftX  + 0.5, canvY + 0.5, lc.width - 1, canvH - 1);
+    ctx.strokeRect(rightX + 0.5, canvY + 0.5, rc.width - 1, canvH - 1);
+
+    ctx.fillStyle = '#a6adc8'; ctx.font = `${11*dpr}px ui-monospace, monospace`; ctx.textAlign = 'left';
+    ctx.fillText(
+      `Scan #${meta.snum||'--'}   Az ${meta.azimuth||'--'}°   El ${meta.el_min||'--'}°–${meta.el_max||'--'}°   Hdg ${meta.heading||'--'}°`,
+      4*dpr, canvY + canvH + Math.round(16*dpr)
+    );
+
+    const dtName = meta.timestamp ? new Date(meta.timestamp * 1000) : new Date();
+    const y = dtName.getUTCFullYear();
+    const mo = String(dtName.getUTCMonth()+1).padStart(2,'0');
+    const da = String(dtName.getUTCDate()).padStart(2,'0');
+    const hh = String(dtName.getUTCHours()).padStart(2,'0');
+    const mm = String(dtName.getUTCMinutes()).padStart(2,'0');
+    const ss = String(dtName.getUTCSeconds()).padStart(2,'0');
+    downloadCanvasAsPNG(out, `nssl_rhi_${y}${mo}${da}_${hh}${mm}${ss}.png`);
+  });
+});
+</script>
+</body>
+</html>
