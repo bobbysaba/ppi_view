@@ -742,10 +742,10 @@ function drawHodograph() {
 
   ctx.fillStyle = '#a6adc8';
   ctx.font = '10px ui-monospace, monospace';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; ctx.fillText('N', cx, cy - radius - 8);
-  ctx.textBaseline = 'top';                               ctx.fillText('S', cx, cy + radius + 8);
-  ctx.textAlign = 'right';  ctx.textBaseline = 'middle';  ctx.fillText('W', cx - radius - 8, cy);
-  ctx.textAlign = 'left';                                  ctx.fillText('E', cx + radius + 8, cy);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; ctx.fillText('E', cx, cy - radius - 8);
+  ctx.textBaseline = 'top';                               ctx.fillText('W', cx, cy + radius + 8);
+  ctx.textAlign = 'right';  ctx.textBaseline = 'middle';  ctx.fillText('N', cx - radius - 8, cy);
+  ctx.textAlign = 'left';                                  ctx.fillText('S', cx + radius + 8, cy);
 
   if (!D.timestamps.length) return;
 
@@ -767,7 +767,6 @@ function drawHodograph() {
     if (sp === null || wd === null || sp === undefined || wd === undefined) continue;
     if (S.r2Filter && rq !== null && rq !== undefined && rq < S.r2Thresh) continue;
     const rad = wd * Math.PI / 180;
-    // wdir is FROM direction; negate both components to get the wind vector (where it blows TO)
     pts.push({
       px: cx - sp * Math.sin(rad) * scale,
       py: cy + sp * Math.cos(rad) * scale,
